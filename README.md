@@ -13,8 +13,9 @@ and takes dangerous files into quarantine before they can be encrypted or corrup
 
 ## How it works (v0.1)
 
-- **Watcher** — uses the OS file-change API (`ReadDirectoryChangesW` on Windows)
-  to receive events: file created, modified, deleted, renamed.
+- **Watcher** — uses the OS file-change API to receive events: file created,
+  modified, deleted, renamed. `ReadDirectoryChangesW` on Windows,
+  `inotify` on Linux, `FSEvents` on macOS (one background thread per platform).
 - **Engine** — evaluates every event with a set of heuristics:
   1. **Dangerous extension** (`.locked`, `.enc`, `.wnry`, `.cerber`, ...) →
      **high threat** → the file is moved into quarantine (it disappears
@@ -66,10 +67,11 @@ no compiler needed.
 
 - [x] Windows: monitoring, heuristics, quarantine, CLI (release binaries)
 - [x] Linux: the same loop on top of `inotify` (compiled and smoke-tested in CI)
-- [ ] macOS: `FSEvents`
+- [x] macOS: the same loop on top of `FSEvents` (beta)
 - [ ] `aegis restore <record>` — take a file back out of quarantine
 - [ ] Better detection: process attribution (who touched the file), YARA rules
 - [ ] Self-update + auto-start with the system
+- [ ] macOS release binaries in CI (needs a signed/notarized build)
 
 ## About the project
 

@@ -22,6 +22,22 @@ jobs:
           name: aegis-linux
           path: build/aegis
 
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build (clang++, C++17, FSEvents)
+        run: |
+          mkdir -p build
+          clang++ -std=c++17 -O2 -Wall src/*.cpp -o build/aegis \
+            -framework CoreServices -framework CoreFoundation
+      - name: Smoke test (help must print and exit 0)
+        run: ./build/aegis help
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aegis-macos
+          path: build/aegis
+
   build-windows:
     runs-on: windows-latest
     steps:

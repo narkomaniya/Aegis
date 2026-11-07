@@ -1,23 +1,29 @@
 // watcher.cpp — реализация наблюдателя:
 //   Windows : ReadDirectoryChangesW (один поток на папку)
+//   macOS   : FSEvents (один поток на все папки, рекурсивно)
 //   Linux   : inotify (один поток на все папки, рекурсивный проход)
-//   macOS   : TODO (FSEvents), пока предупреждение
 #include "watcher.h"
 #include "logger.h"
 
 #include <filesystem>
 #include <map>
 #include <set>
+#include <string>
+#include <vector>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#elif defined(__APPLE__)
+#include <CoreServices/CoreServices.h>
+#include <CoreFoundation/CoreFoundation.h>
+#include <locale>
+#include <codecvt>
 #else
 #include <sys/inotify.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <cstring>
-#include <vector>
 #endif
 
 namespace fs = std::filesystem;
@@ -38,7 +44,7 @@ void Watcher::start() {
     for (int i = 0; i < (int)dirs_.size(); ++i)
         threads_.emplace_back(&Watcher::loop, this, i);
 #else
-    // Linux/macOS: единый поток observing все добавленные папки
+    // macOS/Linux: единый поток на все добавленные папки
     if (!dirs_.empty())
         threads_.emplace_back(&Watcher::loop, this, 0);
 #endif
@@ -46,6 +52,16 @@ void Watcher::start() {
 
 void Watcher::stop() {
     running_ = false;
+#ifdef __APPLE__
+    CFRunLoopRef rl = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(supMu_);
+        rl = runloop_;
+    }
+    // CFRunLoopStop потокобезопасен: будим поток наблюдения,
+    // он сам корректно остановит и удалит свой stream.
+    if (rl) CFRunLoopStop(rl);
+#endif
     // Потоки уходят из блокирующего системного вызова только вместе
     // с процессом, поэтому detach — иначе деструктор std::thread вызовет
     // std::terminate в момент завершения main().
@@ -129,7 +145,144 @@ void Watcher::loop(int index) {
     CloseHandle(h);
 }
 
-#else  // ====================== POSIX (Linux/macOS) ======================
+#elif defined(__APPLE__)
+// ============================================================
+//                        macOS (FSEvents)
+// ============================================================
+
+static std::string toUtf8(const std::wstring& w) {
+    try {
+        std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> conv;
+        return conv.to_bytes(w);
+    } catch (...) {
+        return std::string(w.begin(), w.end());
+    }
+}
+
+static std::wstring fromUtf8(const std::string& s) {
+    try {
+        std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> conv;
+        return conv.from_bytes(s);
+    } catch (...) {
+        return std::wstring(s.begin(), s.end());
+    }
+}
+
+void Watcher::fsEventsCallback(ConstFSEventStreamRef /*stream*/,
+                               void* info,
+                               size_t numEvents,
+                               void* eventPaths,
+                               const FSEventStreamEventFlags eventFlags[],
+                               const FSEventStreamEventId /*eventIds*/[]) {
+    auto* self  = static_cast<Watcher*>(info);
+    auto* paths = static_cast<CFArrayRef>(eventPaths);
+
+    for (size_t i = 0; i < numEvents; ++i) {
+        const FSEventStreamEventFlags flags = eventFlags[i];
+        // Без флагов файла — служебное событие самого корня наблюдения,
+        // пропускаем (FSEvents присылает и такие).
+        if (!(flags & (kFSEventStreamEventFlagItemCreated |
+                       kFSEventStreamEventFlagItemModified |
+                       kFSEventStreamEventFlagItemRenamed  |
+                       kFSEventStreamEventFlagItemRemoved)))
+            continue;
+
+        CFStringRef cf = static_cast<CFStringRef>(
+            CFArrayGetValueAtIndex(paths, (CFIndex)i));
+        CFIndex maxLen =
+            CFStringGetMaximumSizeOfFileSystemRepresentation(cf);
+        std::string utf8((size_t)maxLen + 1, '\0');
+        if (!CFStringGetFileSystemRepresentation(cf, utf8.data(), utf8.size()))
+            continue;
+
+        fs::path full(fromUtf8(utf8));
+
+        FileEvent ev;
+        ev.dir  = full.parent_path().wstring();
+        ev.name = full.filename().wstring();
+
+        if      (flags & kFSEventStreamEventFlagItemRemoved) ev.action = EventAction::Deleted;
+        else if (flags & kFSEventStreamEventFlagItemRenamed) ev.action = EventAction::Renamed;
+        else if (flags & kFSEventStreamEventFlagItemCreated) ev.action = EventAction::Created;
+        else                                                ev.action = EventAction::Modified;
+
+        if (fs::is_directory(full)) {
+            // FSEvents наблюдает рекурсивно сам — отдельные watch'и не нужны
+            continue;
+        }
+
+        if (!self->running_) return;
+        self->cb_(ev);
+    }
+}
+
+void Watcher::loop(int /*index*/) {
+    if (dirs_.empty()) return;
+
+    CFMutableArrayRef paths = CFArrayCreateMutable(
+        kCFAllocatorDefault, (CFIndex)dirs_.size(), &kCFTypeArrayCallBacks);
+    if (!paths) {
+        ae::warn(L"FSEvents: не удалось создать список папок");
+        return;
+    }
+    for (const auto& d : dirs_) {
+        CFStringRef cf = CFStringCreateWithFileSystemRepresentation(
+            kCFAllocatorDefault, toUtf8(d).c_str());
+        if (cf) { CFArrayAppendValue(paths, cf); CFRelease(cf); }
+    }
+
+    FSEventStreamContext ctx{};
+    ctx.info = this;
+
+    FSEventStreamRef stream = FSEventStreamCreate(
+        kCFAllocatorDefault, &Watcher::fsEventsCallback, &ctx, paths,
+        kFSEventStreamEventIdSinceNow,
+        /*latency*/ 0.05,   // почти живое время, без дожидания "окна" (0.3 с)
+        kFSEventStreamCreateFlagFileIds |    // даёт флаги ItemCreated/Modified/…
+        kFSEventStreamCreateFlagNoDefer |    // события сразу, а не на следующем после "долгого" события
+        kFSEventStreamCreateFlagWatchRoot);  // рекурсивно + ловить переименование корня
+
+    if (!stream) {
+        ae::warn(L"FSEvents: FSEventStreamCreate не удался");
+        CFRelease(paths);
+        return;
+    }
+
+    // Запускаем свой run loop: FSEvents доставляет события только в поток,
+    // в котором stream запланирован. Всё в одном потоке — безопасно.
+    CFRunLoopRef rl = CFRunLoopGetCurrent();
+    {
+        std::lock_guard<std::mutex> lock(supMu_);
+        runloop_ = rl;
+        stream_  = stream;
+    }
+    FSEventStreamScheduleWithRunLoop(stream, rl, kCFRunLoopDefaultMode);
+
+    if (!FSEventStreamStart(stream)) {
+        ae::warn(L"FSEvents: не удалось наблюдать");
+        FSEventStreamRelease(stream);
+        std::lock_guard<std::mutex> lock(supMu_);
+        runloop_ = nullptr;  stream_ = nullptr;
+        CFRelease(paths);
+        return;
+    }
+
+    for (const auto& d : dirs_)
+        ae::info(L"наблюдаю (FSEvents): " + d);
+
+    CFRunLoopRun();  // блокируемся, пока stop() не сделает CFRunLoopStop
+
+    FSEventStreamStop(stream);
+    FSEventStreamInvalidate(stream);
+    FSEventStreamRelease(stream);
+    {
+        std::lock_guard<std::mutex> lock(supMu_);
+        runloop_ = nullptr;  stream_ = nullptr;
+    }
+    CFRelease(paths);
+}
+
+#else  // ====================== POSIX (Linux) ======================
 
 // Рекурсивно добавить watch на папку и все её подпапки
 static void addRecursive(int fd, std::map<int, std::wstring>& wd2dir,

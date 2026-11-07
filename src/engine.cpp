@@ -53,9 +53,15 @@ static bool inList(const std::wstring& ext, const wchar_t** list, size_t n) {
 }
 
 bool Engine::insideQuarantine(const std::wstring& full) const {
-    std::wstring f = lower(full);
-    std::wstring q = lower(q_.root());
-    if (!q.empty() && q.back() != L'\\') q += L'\\';
+    // переносимо: приводим оба пути к одному сепаратору ('/')
+    auto norm = [](std::wstring s) {
+        std::replace(s.begin(), s.end(), L'\\', L'/');
+        return s;
+    };
+    std::wstring f = lower(norm(fs::path(full).lexically_normal().wstring()));
+    std::wstring q = lower(norm(fs::path(q_.root()).lexically_normal().wstring()));
+    if (q.empty()) return false;
+    if (q.back() != L'/') q += L'/';
     return f.compare(0, q.size(), q) == 0;
 }
 
@@ -132,7 +138,8 @@ void Engine::take(const FileEvent& e, const std::wstring& full,
 void Engine::onEvent(const FileEvent& e) {
     if (e.action == EventAction::Deleted) return;   // удалять нам нечего, пропускаем
 
-    std::wstring full = e.dir + L"\\" + e.name;
+    // Переносимый путь: на Windows сепаратор '\', на macOS/Linux '/'
+    std::wstring full = (fs::path(e.dir) / e.name).wstring();
     if (insideQuarantine(full)) return;             // карантин сам себя не забирает
 
     std::error_code ec;

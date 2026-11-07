@@ -1,10 +1,17 @@
 #pragma once
-// watcher.h — наблюдение за папками через события ОС (Windows: ReadDirectoryChangesW)
+// watcher.h — наблюдение за папками через события ОС
+//   Windows: ReadDirectoryChangesW | macOS: FSEvents | Linux: inotify
 #include <string>
 #include <vector>
 #include <thread>
 #include <atomic>
 #include <functional>
+
+#ifdef __APPLE__
+#include <mutex>
+#include <CoreFoundation/CoreFoundation.h>
+#include <CoreServices/CoreServices.h>
+#endif
 
 namespace ae {
 
@@ -32,7 +39,19 @@ public:
     const std::vector<std::wstring>& dirs() const { return dirs_; }
 
 private:
-    void loop(int index);  // один поток = одна папка
+    void loop(int index);  // Windows: один поток = одна папка, macOS/Linux: один на все
+
+#ifdef __APPLE__
+    // колбэк FSEvents (C-функция, читает eventFlags и превращает в FileEvent)
+    static void fsEventsCallback(ConstFSEventStreamRef stream, void* info,
+                                 size_t numEvents, void* eventPaths,
+                                 const FSEventStreamEventFlags eventFlags[],
+                                 const FSEventStreamEventId eventIds[]);
+
+    std::mutex supMu_;                 // защищает runloop_/stream_ от доступа из stop()
+    CFRunLoopRef runloop_ = nullptr;   // run loop потока наблюдения
+    FSEventStreamRef stream_ = nullptr; // сам stream FSEvents
+#endif
 
     EventCallback cb_;
     std::vector<std::wstring> dirs_;   // корневые папки наблюдения

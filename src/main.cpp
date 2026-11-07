@@ -62,13 +62,21 @@ static void setupConsole() {
 }
 
 static void banner() {
+#ifdef _WIN32
+    const wchar_t* platform = L"windows";
+#elif defined(__APPLE__)
+    const wchar_t* platform = L"macOS";
+#else
+    const wchar_t* platform = L"linux";
+#endif
     console(L"");
     console(L"    ___   ____   ____  ___ ____    _   ___   ___");
     console(L"   / _ \\ / ___| / ___|/ _ \\__  |  / \\ | _ \\ / _ \\");
     console(L"  | | | |\\___ \\| |  _| | | |/ /  / _ \\| |_)| | | |");
     console(L"  | |_| | ___) | |_| | |_| / /_ / ___ \\  _/| |_| |");
     console(L"   \\___/ |____/ \\____|\\___/____/_/   \\_\\_|  \\___/");
-    console(L"  --- страж твоих файлов | v0.1 (windows) | c++17 ---");
+    console(std::wstring(L"  --- страж твоих файлов | v0.2 (") + platform +
+            L") | c++17 ---");
     console(L"");
 }
 
