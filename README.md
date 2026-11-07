@@ -71,6 +71,13 @@ no compiler needed.
 - [ ] Better detection: process attribution (who touched the file), YARA rules
 - [ ] Self-update + auto-start with the system
 
+## Credits
+
+Built as a human + AI pair-programming project:
+
+- **narkomaniya** — idea, project ownership, testing
+- **GLM (via OpenCode agent)** — architecture and implementation of v0.1
+
 ## About the project
 
 Aegis is a personal educational project in systems programming with C++:
