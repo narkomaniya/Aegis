@@ -1,69 +1,78 @@
 # 🛡️ Aegis
 
-**Aegis** — страж твоих файлов. Программа следит за папками (Рабочий стол, Документы, Загрузки),
-перехватывает подозрительную активность — как это делают настоящие антивирусы, — и уводит файлы
-в карантин, пока их не успел зашифровать или испортить вредоносный софт.
-
-## Как это работает (v0.1)
+**Aegis** is a guardian for your files. It watches your folders (Desktop, Documents,
+Downloads), detects ransomware-like behavior the way real antivirus engines do,
+and takes dangerous files into quarantine before they can be encrypted or corrupted.
 
 ```
-┌─────────────┐    события ОС    ┌──────────┐   вердикт   ┌────────────┐
-│  Watcher    │ ───────────────► │  Engine  │ ──────────► │ Quarantine │
-│ (наблюдение)│                  │(эвристики)│             │ (карантин) │
-└─────────────┘                  └──────────┘             └────────────┘
+┌─────────────┐    OS events    ┌──────────┐   verdict   ┌────────────┐
+│   Watcher   │ ──────────────► │  Engine  │ ──────────► │ Quarantine │
+│ (monitoring)│                 │ (rules)  │             │  (custody) │
+└─────────────┘                 └──────────┘             └────────────┘
 ```
 
-- **Watcher** — через системный API (`ReadDirectoryChangesW`) получает события:
-  создание, изменение, удаление, переименование файлов.
-- **Engine** — оценивает каждое событие по эвристикам:
-  1. Опасное расширение (`.locked`, `.enc`, `.wnry`, `.cerber`...) → **высокая угроза**
-     → файл перемещается в карантин (с диска исчезает, но программа его сохранила).
-  2. Высокая **энтропия** содержимого нового файла (больше 7.5 из 8) — признак шифрования.
-     Архивы и медиа (zip, jpg, mp4...) не считаются — там это норма.
-  3. **Скорость** изменения файлов: если за секунду меняется очень много файлов —
-     включается аварийный режим на 30 секунд, и все новые файлы копируются в карантин.
-- **Quarantine** — качественная изоляция: каждая запись лежит в своей папке
-  с `meta.txt` (откуда пришёл файл, когда, по какой причине забран).
-  Ничего не удаляется безвозвратно — «удалить» здесь значит «убрать с диска к себе».
+## How it works (v0.1)
 
-## Сборка
+- **Watcher** — uses the OS file-change API (`ReadDirectoryChangesW` on Windows)
+  to receive events: file created, modified, deleted, renamed.
+- **Engine** — evaluates every event with a set of heuristics:
+  1. **Dangerous extension** (`.locked`, `.enc`, `.wnry`, `.cerber`, ...) →
+     **high threat** → the file is moved into quarantine (it disappears
+     from disk, but the program keeps it safe).
+  2. **High entropy** (above 7.5 of 8.0) in a newly created or modified file —
+     a classic sign of encryption. First 8 KiB of the file are sampled.
+     Already-compressed formats (zip, jpg, mp4, exe...) are excluded —
+     high entropy is normal there.
+  3. **Mass modification rate**: when more than 150 files change within a second,
+     Aegis triggers an emergency mode for 30 seconds — every new file is
+     copied into quarantine.
+- **Quarantine** — each taken file lives in its own folder with a `meta.txt`
+  (original path, time, and the reason it was taken). Nothing is destroyed:
+  "delete" here means "remove from the victim folder, keep in custody".
 
-Нужен компилятор C++17. Есть `build.bat`:
+## Build
+
+Requires a C++17 compiler. On Windows you can simply run:
 
 ```
 build.bat
 ```
 
-Или вручную:
+Or manually:
 
 ```
-mkdir build
 g++ -std=c++17 -O2 -Wall src\*.cpp -o build\aegis.exe
 ```
 
-## Запуск
+## Run
 
 ```
-build\aegis.exe help          # справка
-build\aegis.exe watch         # следить за Рабочим столом, Документами, Загрузками
-build\aegis.exe watch D:\путь # следить за конкретной папкой
-build\aegis.exe quarantine    # показать карантин
+build\aegis.exe help          # help
+build\aegis.exe watch         # watch Desktop, Documents, Downloads
+build\aegis.exe watch D:\dir  # watch a specific folder
+build\aegis.exe quarantine    # show quarantine records
 ```
 
-В терминал выводятся события, статистика и команды: `status`, `quarantine`, `help`, `q` — выход.
-Лог пишется в `%USERPROFILE%\.aegis\aegis.log`.
+Interactive commands while watching: `status`, `quarantine`, `help`, `q` (exit).
+Logs are written to `%USERPROFILE%\.aegis\aegis.log`.
 
-## Дорожная карта
+## Download
 
-- [x] Windows: наблюдение, эвристики, карантин, CLI
-- [ ] Linux: тот же цикл на `inotify`
+Ready-to-run binaries are published on the
+[Releases page](https://github.com/narkomaniya/Aegis/releases) —
+no compiler needed.
+
+## Roadmap
+
+- [x] Windows: monitoring, heuristics, quarantine, CLI
+- [ ] Linux: the same loop on top of `inotify`
 - [ ] macOS: `FSEvents`
-- [ ] Восстановление файла из карантина (`aegis restore <id>`)
-- [ ] Цифровые подписи событий + отчёт «кто менял»
-- [ ] Обучение на реальных примерах (YARA-правила, ML на энтропийных признакам)
+- [ ] `aegis restore <record>` — take a file back out of quarantine
+- [ ] Better detection: process attribution (who touched the file), YARA rules
+- [ ] Self-update + auto-start with the system
 
-## Идея проекта
+## About the project
 
-Aegis задуман как учебный проект системного программирования на C++:
-низкоуровневые API операционных систем, многопоточность, работа с файловой системой,
-а также базовые концепции информационной безопасности.
+Aegis is a personal educational project in systems programming with C++:
+OS-level APIs, multithreading, filesystem work, and the fundamentals of
+information security.
