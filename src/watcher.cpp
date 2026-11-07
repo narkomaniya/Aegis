@@ -191,7 +191,7 @@ void Watcher::loop(int index) {
         char* end = p + len;
         while (p < end) {
             auto* ev = reinterpret_cast<inotify_event*>(p);
-            std::string name(ev->name ? ev->name : "");
+            std::string name(ev->len ? ev->name : "");
             auto itDir = wd2dir.find(ev->wd);
             std::wstring dir = (itDir != wd2dir.end()) ? itDir->second : L"";
             std::wstring wname(name.begin(), name.end());

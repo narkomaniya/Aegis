@@ -125,7 +125,7 @@ static int runWatch(std::vector<std::wstring> dirs) {
     std::error_code ec;
     fs::create_directories(fs::path(qRoot).parent_path(), ec);
 
-    Logger::instance().enableFile(fs::path(qRoot).parent_path() / L"aegis.log");
+    Logger::instance().enableFile((fs::path(qRoot).parent_path() / L"aegis.log").wstring());
 
     Quarantine q(qRoot);
     Engine engine(q, dirs);
