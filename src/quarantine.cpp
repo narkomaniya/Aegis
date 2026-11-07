@@ -62,8 +62,15 @@ bool Quarantine::moveIn(const std::wstring& full, const std::wstring& reason, bo
     if (!fs::exists(src, ec) || ec) return false;
 
     // Карантинная запись: папка вида <root>\20261107_142233_<имя>
+    // Имена могут совпасть (два файла в одну секунду) — добавляем _1, _2, ...
     fs::path folder = fs::path(root_) /
                       (stamp() + L"_" + src.filename().wstring());
+    for (int i = 1; fs::exists(folder, ec) && !ec && i < 1000; ++i) {
+        ec.clear();
+        folder = fs::path(root_) /
+                 (stamp() + L"_" + std::to_wstring(i) + L"_" + src.filename().wstring());
+    }
+    ec.clear();
     fs::create_directories(folder, ec);
     if (ec) return false;
 
