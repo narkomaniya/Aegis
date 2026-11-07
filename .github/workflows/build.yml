@@ -35,6 +35,12 @@ jobs:
       - name: Dump errors into job summary
         if: failure()
         run: cat build/clang.log >> "$GITHUB_STEP_SUMMARY"
+      - name: Publish errors as annotations
+        if: failure()
+        run: |
+          grep -E "error:" build/clang.log | head -30 | while IFS= read -r line; do
+            echo "::error::$line"
+          done
       - name: Smoke test (help must print and exit 0)
         run: ./build/aegis help
       - uses: actions/upload-artifact@v4
