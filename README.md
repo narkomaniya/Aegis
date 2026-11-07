@@ -11,7 +11,7 @@ and takes dangerous files into quarantine before they can be encrypted or corrup
 └─────────────┘                 └──────────┘             └────────────┘
 ```
 
-## How it works (v0.1)
+## How it works (v0.2)
 
 - **Watcher** — uses the OS file-change API to receive events: file created,
   modified, deleted, renamed. `ReadDirectoryChangesW` on Windows,
