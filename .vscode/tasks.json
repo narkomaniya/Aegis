@@ -1,0 +1,27 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Aegis: собрать (g++)",
+            "type": "shell",
+            "command": "g++",
+            "args": [
+                "-std=c++17",
+                "-O2",
+                "-Wall",
+                "src\\main.cpp",
+                "src\\logger.cpp",
+                "src\\watcher.cpp",
+                "src\\engine.cpp",
+                "src\\quarantine.cpp",
+                "-o",
+                "build\\aegis.exe"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": "$gcc"
+        }
+    ]
+}
