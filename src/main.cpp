@@ -15,6 +15,7 @@
 #include <clocale>
 #include <filesystem>
 #include <system_error>
+#include <algorithm>
 
 #include "logger.h"
 #include "watcher.h"
@@ -37,6 +38,7 @@
 #else
 #include <locale>
 #include <codecvt>
+#include <fstream>
 #endif
 
 namespace fs = std::filesystem;
@@ -123,7 +125,7 @@ static std::wstring homeDir() {
 #endif
 }
 
-// Демо-набор папок "по умолчанию" — через Known Folders API:
+// Набор папок "по умолчанию" — через Known Folders API:
 // правильно отдаёт Desktop/Documents/Downloads даже если их увёз OneDrive.
 static void pushDefaultDir(std::vector<std::wstring>& dirs, int which) {
     // which: 0 = Desktop, 1 = Documents, 2 = Downloads
@@ -137,20 +139,38 @@ static void pushDefaultDir(std::vector<std::wstring>& dirs, int which) {
         path = raw;
         CoTaskMemFree(raw);
     }
+#else
+    // Linux: xdg-user-dirs создаёт и ЛОКАЛИЗУЕТ папки (Рабочий стол, Загрузки...),
+    // пути лежат в ~/.config/user-dirs.dirs. mac всегда: Desktop/Documents/etc.
+    static const char* kXdgKeys[3] = {
+        "XDG_DESKTOP_DIR", "XDG_DOCUMENTS_DIR", "XDG_DOWNLOADS_DIR" };
+    const wchar_t* kSubs[3] = { L"Desktop", L"Documents", L"Downloads" };
+
+    std::wstring home = homeDir();
+    if (home.empty()) return;
+    path = home + L"/" + kSubs[which];  // fallback
+
+    const char* h = std::getenv("HOME");
+    if (h) {
+        std::ifstream cfg(std::string(h) + "/.config/user-dirs.dirs");
+        if (cfg) {
+            std::string line;
+            while (std::getline(cfg, line)) {
+                size_t hash = line.find('#');           // комментарии
+                if (hash != std::string::npos) line = line.substr(0, hash);
+                size_t eq = line.find('=');
+                if (eq == std::string::npos) continue;
+                if (line.compare(0, eq, kXdgKeys[which]) != 0) continue;
+                std::string val = line.substr(eq + 1);
+                val.erase(std::remove(val.begin(), val.end(), '"'), val.end());
+                // "$HOME/..." -> "/home/user/..."
+                if (val.compare(0, 5, "$HOME") == 0) val = std::string(h) + val.substr(5);
+                if (!val.empty()) { path = toW(val); break; }
+            }
+        }
+    }
 #endif
 
-    if (path.empty()) {  // fallback: то, что было раньше (%HOME%/Desktop и т.п.)
-        std::wstring home = homeDir();
-        if (home.empty()) return;
-        const wchar_t* subs[3] = { L"Desktop", L"Documents", L"Downloads" };
-        std::wstring sep =
-#ifdef _WIN32
-            L"\\";
-#else
-            L"/";
-#endif
-        path = home + sep + subs[which];
-    }
     dirs.push_back(path);
 }
 
