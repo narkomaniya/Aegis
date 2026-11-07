@@ -64,8 +64,8 @@ no compiler needed.
 
 ## Roadmap
 
-- [x] Windows: monitoring, heuristics, quarantine, CLI
-- [ ] Linux: the same loop on top of `inotify`
+- [x] Windows: monitoring, heuristics, quarantine, CLI (release binaries)
+- [x] Linux: the same loop on top of `inotify` (compiled and smoke-tested in CI)
 - [ ] macOS: `FSEvents`
 - [ ] `aegis restore <record>` — take a file back out of quarantine
 - [ ] Better detection: process attribution (who touched the file), YARA rules
