@@ -238,7 +238,7 @@ void Watcher::loop(int /*index*/) {
         kCFAllocatorDefault, &Watcher::fsEventsCallback, &ctx, paths,
         kFSEventStreamEventIdSinceNow,
         /*latency*/ 0.05,   // почти живое время, без дожидания "окна" (0.3 с)
-        kFSEventStreamCreateFlagFileIds |    // даёт флаги ItemCreated/Modified/…
+        kFSEventStreamCreateFlagFileEvents | // даёт флаги ItemCreated/Modified/…
         kFSEventStreamCreateFlagNoDefer |    // события сразу, а не на следующем после "долгого" события
         kFSEventStreamCreateFlagWatchRoot);  // рекурсивно + ловить переименование корня
 
