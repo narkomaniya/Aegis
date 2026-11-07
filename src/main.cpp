@@ -16,12 +16,16 @@
 #include <windows.h>
 #include <io.h>
 #include <fcntl.h>
+#else
+#include <locale>
+#include <codecvt>
 #endif
 
 namespace fs = std::filesystem;
 using namespace ae;
 
 #ifdef _WIN32
+// командная строка Windows приходит в ANSI (CP1251)
 static std::wstring toW(const std::string& s) {
     if (s.empty()) return L"";
     int n = MultiByteToWideChar(CP_ACP, 0, s.c_str(), (int)s.size(), nullptr, 0);
@@ -29,10 +33,23 @@ static std::wstring toW(const std::string& s) {
     MultiByteToWideChar(CP_ACP, 0, s.c_str(), (int)s.size(), w.data(), n);
     return w;
 }
+#else
+// Linux/macOS: аргументы приходят в UTF-8 — конвертируем в wide
+static std::wstring toW(const std::string& s) {
+    if (s.empty()) return L"";
+    try {
+        std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> conv;
+        return conv.from_bytes(s);
+    } catch (...) {
+        return std::wstring(s.begin(), s.end());
+    }
+}
+#endif
 
-// Русский текст и ANSI-цвета в консоли (только если это настоящая консоль)
+// Локаль везде, а на Windows ещё и UTF-16-консоль
 static void setupConsole() {
     std::setlocale(LC_ALL, "");
+#ifdef _WIN32
     if (_isatty(_fileno(stdout))) {
         _setmode(_fileno(stdout), _O_U16TEXT);
         _setmode(_fileno(stderr), _O_U16TEXT);
@@ -41,8 +58,8 @@ static void setupConsole() {
         if (GetConsoleMode(h, &mode))
             SetConsoleMode(h, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
     }
-}
 #endif
+}
 
 static void banner() {
     console(L"");
@@ -88,16 +105,20 @@ static std::wstring quarantineRoot() {
 }
 
 static int runWatch(std::vector<std::wstring> dirs) {
-#ifdef _WIN32
     if (dirs.empty()) {  // стандартный набор: то, что чаще всего атакуют
         std::wstring home = homeDir();
         if (!home.empty()) {
-            dirs.push_back(home + L"\\Desktop");
-            dirs.push_back(home + L"\\Documents");
-            dirs.push_back(home + L"\\Downloads");
+            std::wstring sep =
+#ifdef _WIN32
+                L"\\";
+#else
+                L"/";
+#endif
+            dirs.push_back(home + sep + L"Desktop");
+            dirs.push_back(home + sep + L"Documents");
+            dirs.push_back(home + sep + L"Downloads");
         }
     }
-#endif
 
     // Карантин и лог живут в ~/.aegis — сами за собой не следим
     const std::wstring qRoot = quarantineRoot();

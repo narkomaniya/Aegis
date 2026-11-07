@@ -1,0 +1,40 @@
+name: build
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build (g++, C++17)
+        run: |
+          mkdir -p build
+          g++ -std=c++17 -O2 -Wall src/*.cpp -o build/aegis
+      - name: Smoke test (help must print and exit 0)
+        run: ./build/aegis help
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aegis-linux
+          path: build/aegis
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build (g++ MinGW, C++17)
+        shell: cmd
+        run: |
+          if not exist build mkdir build
+          g++ -std=c++17 -O2 -Wall src\*.cpp -o build\aegis.exe
+      - name: Smoke test (help must print and exit 0)
+        shell: cmd
+        run: build\aegis.exe help
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aegis-windows
+          path: build\aegis.exe
