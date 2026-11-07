@@ -109,13 +109,13 @@ void Engine::checkRate() {
             emergency_ = false;
         return;
     }
-    if (rate_.size() > 150) {  // >150 изменений за секунду — не человек так работает
+    if (rate_.size() > 150) {  // >150 changes per second — no human works this fast
         emergency_ = true;
         emergencyUntil_ = std::chrono::steady_clock::now() + std::chrono::seconds(30);
         ++alerts_;
-        ae::alert(L"АВАРИЙНЫЙ РЕЖИМ: массовое изменение файлов "
-                  L"(>150/сек) — похоже на шифровальщик!");
-        ae::warn(L"новые файлы 30 секунд будут копироваться в карантин");
+        ae::alert(L"EMERGENCY: mass file changes (>150/sec) — "
+                  L"looks like a ransomware attack!");
+        ae::warn(L"new files will be copied to quarantine for 30 seconds");
     }
 }
 
@@ -125,12 +125,12 @@ void Engine::take(const FileEvent& e, const std::wstring& full,
     if (done) {
         ++quarantined_;
         if (copyOnly) {
-            ae::warn(L"скопирован в карантин: " + full + L"  (" + reason + L")");
+            ae::warn(L"copied to quarantine: " + full + L"  (" + reason + L")");
         } else {
-            ae::alert(L"УГРОЗА забрана в карантин: " + full + L"  (" + reason + L")");
+            ae::alert(L"THREAT quarantined: " + full + L"  (" + reason + L")");
         }
     } else {
-        ae::warn(L"не удалось убрать в карантин: " + full);
+        ae::warn(L"failed to quarantine: " + full);
     }
     (void)e;
 }
@@ -167,17 +167,17 @@ void Engine::onEvent(const FileEvent& e) {
     const bool susExt          = inList(ext, kSuspiciousExt,
                                         sizeof(kSuspiciousExt) / sizeof(wchar_t*));
 
-    // 1) Переименовали нормальный файл в опасное расширение
+    // 1) Renamed a normal file into a dangerous extension
     if (e.action == EventAction::Renamed &&
         !inList(oldExt, kSuspiciousExt, sizeof(kSuspiciousExt) / sizeof(wchar_t*)) &&
         !oldExt.empty() && susExt) {
-        take(e, full, L"опасное переименование: " + oldExt + L" -> " + ext, false);
+        take(e, full, L"dangerous rename: " + oldExt + L" -> " + ext, false);
         return;
     }
 
-    // 2) Опасное расширение у нового/изменённого файла
+    // 2) Dangerous extension on a new/modified file
     if (susExt) {
-        take(e, full, L"опасное расширение " + ext, false);
+        take(e, full, L"dangerous extension " + ext, false);
         return;
     }
 
@@ -194,15 +194,15 @@ void Engine::onEvent(const FileEvent& e) {
         if (H >= threshold) {
             wchar_t buf[16];
             swprintf(buf, 16, L"%.2f", H);
-            take(e, full, L"высокая энтропия (" + std::wstring(buf) +
-                 L" из 8.0) — похоже на шифрование", false);
+            take(e, full, L"high entropy (" + std::wstring(buf) +
+                 L"/8.0) — looks like encryption", false);
             return;
         }
     }
 
     // 4) Аварийный режим: все созданные файлы копируем
     if (emergencyActive() && e.action == EventAction::Created) {
-        take(e, full, L"аварийный режим: массовое изменение файлов", true);
+        take(e, full, L"emergency mode: mass file changes", true);
         return;
     }
 }

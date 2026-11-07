@@ -88,12 +88,12 @@ void Watcher::loop(int index) {
         nullptr);
 
     if (h == INVALID_HANDLE_VALUE) {
-        ae::warn(L"не удалось наблюдать: " + dir + L" (код " +
+        ae::warn(L"cannot watch: " + dir + L" (code " +
                  std::to_wstring(GetLastError()) + L")");
         return;
     }
 
-    ae::info(L"наблюдаю: " + dir);
+    ae::info(L"watching: " + dir);
 
     constexpr DWORD BUF = 64 * 1024;
     std::vector<BYTE> buf(BUF);
@@ -222,7 +222,7 @@ void Watcher::loop(int /*index*/) {
     CFMutableArrayRef paths = CFArrayCreateMutable(
         kCFAllocatorDefault, (CFIndex)dirs_.size(), &kCFTypeArrayCallBacks);
     if (!paths) {
-        ae::warn(L"FSEvents: не удалось создать список папок");
+        ae::warn(L"FSEvents: failed to create the folder list");
         return;
     }
     for (const auto& d : dirs_) {
@@ -243,7 +243,7 @@ void Watcher::loop(int /*index*/) {
         kFSEventStreamCreateFlagWatchRoot);  // рекурсивно + ловить переименование корня
 
     if (!stream) {
-        ae::warn(L"FSEvents: FSEventStreamCreate не удался");
+        ae::warn(L"FSEvents: FSEventStreamCreate failed");
         CFRelease(paths);
         return;
     }
@@ -259,7 +259,7 @@ void Watcher::loop(int /*index*/) {
     FSEventStreamScheduleWithRunLoop(stream, rl, kCFRunLoopDefaultMode);
 
     if (!FSEventStreamStart(stream)) {
-        ae::warn(L"FSEvents: не удалось наблюдать");
+        ae::warn(L"FSEvents: cannot watch");
         FSEventStreamRelease(stream);
         std::lock_guard<std::mutex> lock(supMu_);
         runloop_ = nullptr;  stream_ = nullptr;
@@ -268,7 +268,7 @@ void Watcher::loop(int /*index*/) {
     }
 
     for (const auto& d : dirs_)
-        ae::info(L"наблюдаю (FSEvents): " + d);
+        ae::info(L"watching (FSEvents): " + d);
 
     CFRunLoopRun();  // блокируемся, пока stop() не сделает CFRunLoopStop
 
@@ -314,16 +314,16 @@ static void addRecursive(int fd, std::map<int, std::wstring>& wd2dir,
 
 void Watcher::loop(int index) {
     (void)index;
-    int fd = inotify_init1(0 /* блокирующий режим */);
+    int fd = inotify_init1(0 /* blocking mode */);
     if (fd < 0) {
-        ae::warn(L"inotify_init не удался");
+        ae::warn(L"inotify_init failed");
         return;
     }
 
     std::map<int, std::wstring> wd2dir;
     for (const auto& d : dirs_) {
         addRecursive(fd, wd2dir, d);
-        ae::info(L"наблюдаю: " + d);
+        ae::info(L"watching: " + d);
     }
 
     // подставки под событие MOVED_FROM -> MOVED_TO (как RENAMED_OLD/NEW)

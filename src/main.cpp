@@ -95,24 +95,24 @@ static void banner() {
     console(L"  | | | |\\___ \\| |  _| | | |/ /  / _ \\| |_)| | | |");
     console(L"  | |_| | ___) | |_| | |_| / /_ / ___ \\  _/| |_| |");
     console(L"   \\___/ |____/ \\____|\\___/____/_/   \\_\\_|  \\___/");
-    console(std::wstring(L"  --- страж твоих файлов | v0.2 (") + platform +
+    console(std::wstring(L"  --- file guardian | v0.2 (") + platform +
             L") | c++17 ---");
     console(L"");
 }
 
 static void printHelp() {
-    console(L"Команды:");
-    console(L"  aegis watch [папка1 папка2 ...]  следить за папками");
-    console(L"                                   (без аргументов: Десктоп, Документы, Загрузки)");
-    console(L"  aegis quarantine                 показать содержимое карантина");
-    console(L"  aegis restore                    показать записи карантина с номерами");
-    console(L"  aegis restore <номер>            вернуть файл из карантина на место");
-    console(L"  aegis help                       эта справка");
+    console(L"Commands:");
+    console(L"  aegis watch [dir1 dir2 ...]      watch folders");
+    console(L"                                   (default: Desktop, Documents, Downloads)");
+    console(L"  aegis quarantine                 show quarantine contents");
+    console(L"  aegis restore                    list quarantine records with numbers");
+    console(L"  aegis restore <number>           take a file back out of quarantine");
+    console(L"  aegis help                       this help");
     console(L"");
-    console(L"Команды во время наблюдения:");
-    console(L"  status       статистика          quarantine   список карантина");
-    console(L"  restore [n]  достать файл        help         справка");
-    console(L"  q            выход");
+    console(L"Commands while watching:");
+    console(L"  status       statistics          quarantine   quarantine list");
+    console(L"  restore [n]  list / take back    help         help");
+    console(L"  q            exit");
 }
 
 static std::wstring homeDir() {
@@ -194,14 +194,14 @@ static std::wstring trimW(const std::wstring& s) {
 static void printRecordList(const Quarantine& q) {
     auto recs = q.records();
     if (recs.empty()) {
-        console(L"  карантин пуст");
+        console(L"  quarantine is empty");
         return;
     }
     int i = 1;
     for (const auto& r : recs) {
         console(L"  [" + std::to_wstring(i++) + L"] " + r.file);
-        console(L"      откуда: " + r.from);
-        console(L"      почему: " + r.reason);
+        console(L"      from:    " + r.from);
+        console(L"      reason:  " + r.reason);
     }
 }
 
@@ -210,15 +210,15 @@ static int doRestoreByNumber(Quarantine& q, Engine* engine,
     size_t num = 0;
     for (wchar_t c : numStr) {
         if (c < L'0' || c > L'9') {
-            console(L"номер должен быть числом: " + numStr);
+            console(L"number must be digits: " + numStr);
             return 1;
         }
         num = num * 10 + (size_t)(c - L'0');
     }
     auto recs = q.records();
     if (num == 0 || num > recs.size()) {
-        console(L"нет такой записи: " + std::to_wstring(num) +
-                L" (в карантине " + std::to_wstring(recs.size()) + L")");
+        console(L"no such record: " + std::to_wstring(num) +
+                L" (quarantine holds " + std::to_wstring(recs.size()) + L")");
         return 1;
     }
     Quarantine::Record rec = recs[num - 1];
@@ -228,10 +228,10 @@ static int doRestoreByNumber(Quarantine& q, Engine* engine,
     if (engine) engine->ignorePath(rec.from);
 
     if (q.restore(rec)) {
-        ok(L"вернул файл из карантина: " + rec.from);
+        ok(L"restored from quarantine: " + rec.from);
         return 0;
     }
-    warn(L"не удалось вернуть: " + rec.file);
+    warn(L"could not restore: " + rec.file);
     return 1;
 }
 
@@ -258,16 +258,16 @@ static int runWatch(std::vector<std::wstring> dirs) {
         if (watcher.add(d)) {
             ++added;
         } else {
-            warn(L"папка не найдена, пропускаю: " + d);
+            warn(L"folder not found, skipping: " + d);
         }
     }
     if (added == 0) {
-        warn(L"нечего наблюдать — выхожу");
+        warn(L"nothing to watch — exiting");
         return 1;
     }
 
-    ok(L"Aegis на страже. Карантин: " + qRoot);
-    info(L"команды: status | quarantine | help | q(выход)");
+    ok(L"Aegis is on duty. Quarantine: " + qRoot);
+    info(L"commands: status | quarantine | restore | help | q(exit)");
     console(L"");
 
     watcher.start();
@@ -279,33 +279,33 @@ static int runWatch(std::vector<std::wstring> dirs) {
         if (!std::getline(std::wcin, line)) break;  // Ctrl+C / Ctrl+Z
         for (auto& c : line) c = towlower(c);
 
-        if (line == L"q" || line == L"quit" || line == L"exit" || line == L"выход") {
+        if (line == L"q" || line == L"quit" || line == L"exit") {
             break;
         } else if (line == L"status") {
-            console(L"  забрано в карантин: " + std::to_wstring(engine.quarantinedCount()));
-            console(L"  тревог:             " + std::to_wstring(engine.alertCount()));
-            console(L"  аварийный режим:    " +
-                    std::wstring(engine.emergencyActive() ? L"ДА" : L"нет"));
-            console(L"  папок под наблюдением: " + std::to_wstring(added));
+            console(L"  quarantined:         " + std::to_wstring(engine.quarantinedCount()));
+            console(L"  alerts:              " + std::to_wstring(engine.alertCount()));
+            console(L"  emergency mode:      " +
+                    std::wstring(engine.emergencyActive() ? L"YES" : L"no"));
+            console(L"  folders watched:     " + std::to_wstring(added));
         } else if (line == L"quarantine") {
             auto items = q.list();
-            if (items.empty()) console(L"  карантин пуст");
+            if (items.empty()) console(L"  quarantine is empty");
             for (const auto& it : items) console(L"  - " + it);
         } else if (line == L"restore") {
             printRecordList(q);
-            console(L"  чтобы достать файл: restore <номер>");
+            console(L"  to take a file back: restore <number>");
         } else if (line.rfind(L"restore ", 0) == 0) {
             doRestoreByNumber(q, &engine, trimW(line.substr(8)));
         } else if (line == L"help") {
             console(L"");
             printHelp();
         } else if (!line.empty()) {
-            console(L"неизвестная команда: попробуй help");
+            console(L"unknown command: try help");
         }
     }
 
     watcher.stop();
-    ok(L"Aegis остановлен. До связи!");
+    ok(L"Aegis stopped. Talk soon!");
     return 0;
 }
 
@@ -313,10 +313,10 @@ static int runQuarantineList() {
     Quarantine q(quarantineRoot());
     auto items = q.list();
     if (items.empty()) {
-        console(L"Карантин пуст.");
+        console(L"Quarantine is empty.");
         return 0;
     }
-    console(L"Карантин (" + std::to_wstring(items.size()) + L") в " +
+    console(L"Quarantine (" + std::to_wstring(items.size()) + L") at " +
             quarantineRoot() + L":");
     for (const auto& it : items) console(L"  - " + it);
     return 0;
@@ -350,7 +350,7 @@ int main(int argc, char** argv) {
         return doRestoreByNumber(q, nullptr, args[0]);
     }
 
-    console(L"Неизвестная команда: " + args[0]);
+    console(L"Unknown command: " + args[0]);
     console(L"");
     printHelp();
     return 1;
