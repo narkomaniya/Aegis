@@ -13,7 +13,7 @@ add_executable(aegis
 )
 
 if(WIN32)
-    target_link_libraries(aegis PRIVATE user32)
+    target_link_libraries(aegis PRIVATE user32 shell32 ole32 uuid)
 elseif(APPLE)
     # FSEvents (наблюдение за файлами) + CoreFoundation (CFRunLoop/CFString)
     target_link_libraries(aegis PRIVATE

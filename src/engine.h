@@ -8,6 +8,7 @@
 #include <deque>
 #include <mutex>
 #include <chrono>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -28,6 +29,9 @@ public:
     unsigned long long alertCount() const { return alerts_; }
     bool emergencyActive() const;
 
+    // Не трогать этот путь (файл только что вернули из карантина через restore)
+    void ignorePath(const std::wstring& full);
+
 private:
     double sampleEntropy(const std::wstring& full) const;   // Шеннон по первым 8 КиБ, -1 = нет данных
     bool insideQuarantine(const std::wstring& full) const;  // событие внутри самого карантина?
@@ -39,6 +43,7 @@ private:
     std::vector<std::wstring> protectedRoots_;
 
     mutable std::mutex m_;
+    std::set<std::wstring> ignored_;   // пути после restore — не забирать обратно
     std::deque<std::chrono::steady_clock::time_point> rate_;
     bool emergency_ = false;
     std::chrono::steady_clock::time_point emergencyUntil_{};

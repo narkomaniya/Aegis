@@ -49,9 +49,12 @@ g++ -std=c++17 -O2 -Wall src\*.cpp -o build\aegis.exe
 
 ```
 build\aegis.exe help          # help
-build\aegis.exe watch         # watch Desktop, Documents, Downloads
+build\aegis.exe watch         # watch your real Desktop, Documents, Downloads
+                              # (Known Folders API: OneDrive-aware)
 build\aegis.exe watch D:\dir  # watch a specific folder
 build\aegis.exe quarantine    # show quarantine records
+build\aegis.exe restore       # quarantine records with numbers
+build\aegis.exe restore 2     # take file #2 back out of quarantine
 ```
 
 Interactive commands while watching: `status`, `quarantine`, `help`, `q` (exit).
@@ -66,9 +69,9 @@ no compiler needed.
 ## Roadmap
 
 - [x] Windows: monitoring, heuristics, quarantine, CLI (release binaries)
+- [x] `aegis restore <n>` — take a file back out of quarantine (Windows + Linux + macOS)
 - [x] Linux: the same loop on top of `inotify` (compiled and smoke-tested in CI)
 - [x] macOS: the same loop on top of `FSEvents` (beta)
-- [ ] `aegis restore <record>` — take a file back out of quarantine
 - [ ] Better detection: process attribution (who touched the file), YARA rules
 - [ ] Self-update + auto-start with the system
 - [ ] macOS release binaries in CI (needs a signed/notarized build)

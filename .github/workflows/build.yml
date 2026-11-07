@@ -56,7 +56,7 @@ jobs:
         shell: cmd
         run: |
           if not exist build mkdir build
-          g++ -std=c++17 -O2 -Wall src\*.cpp -o build\aegis.exe
+          g++ -std=c++17 -O2 -Wall src\*.cpp -o build\aegis.exe -lshell32 -lole32 -luuid
       - name: Smoke test (help must print and exit 0)
         shell: cmd
         run: build\aegis.exe help

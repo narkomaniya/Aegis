@@ -135,11 +135,22 @@ void Engine::take(const FileEvent& e, const std::wstring& full,
     (void)e;
 }
 
+void Engine::ignorePath(const std::wstring& full) {
+    std::lock_guard<std::mutex> lock(m_);
+    ignored_.insert(lower(full));
+}
+
 void Engine::onEvent(const FileEvent& e) {
     if (e.action == EventAction::Deleted) return;   // удалять нам нечего, пропускаем
 
     // Переносимый путь: на Windows сепаратор '\', на macOS/Linux '/'
     std::wstring full = (fs::path(e.dir) / e.name).wstring();
+
+    {
+        std::lock_guard<std::mutex> lock(m_);
+        if (ignored_.count(lower(full))) return;    // только вернули из карантина — не трогаем
+    }
+
     if (insideQuarantine(full)) return;             // карантин сам себя не забирает
 
     std::error_code ec;

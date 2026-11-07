@@ -20,6 +20,19 @@ public:
     std::vector<std::wstring> list() const;  // имена записей карантина
     unsigned long long count() const;
 
+    // Полная запись карантина: чего, откуда и почему забрали
+    struct Record {
+        std::wstring folder;   // путь к папке-записи
+        std::wstring file;     // имя забранного файла
+        std::wstring from;     // где файл лежал до карантина
+        std::wstring reason;   // что в нём нашли подозрительного
+        std::wstring time;     // когда забрали
+        std::wstring mode;     // move / copy (emergency)
+    };
+
+    std::vector<Record> records() const;         // читает meta.txt каждой записи
+    bool restore(const Record& rec);             // вернуть файл на прежнее место
+
 private:
     std::wstring root_;
 };
