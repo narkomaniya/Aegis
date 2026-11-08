@@ -74,7 +74,7 @@ no compiler needed.
 - [x] macOS: the same loop on top of `FSEvents` (beta)
 - [ ] Better detection: process attribution (who touched the file), YARA rules
 - [ ] Self-update + auto-start with the system
-- [ ] macOS release binaries in CI (needs a signed/notarized build)
+- [ ] Signed / notarized macOS builds
 
 ## About the project
 
