@@ -3,6 +3,7 @@
 **Aegis** is a guardian for your files. It watches your folders (Desktop, Documents,
 Downloads), detects ransomware-like behavior the way real antivirus engines do,
 and takes dangerous files into quarantine before they can be encrypted or corrupted.
+**The project is no longer in beta — Aegis is ready for everyday use.**
 
 ```
 ┌─────────────┐    OS events    ┌──────────┐   verdict   ┌────────────┐
@@ -113,7 +114,7 @@ no compiler needed.
 - [x] Windows: monitoring, heuristics, quarantine, CLI (release binaries)
 - [x] `aegis restore <n>` — take a file back out of quarantine (Windows + Linux + macOS)
 - [x] Linux: the same loop on top of `inotify` (compiled and smoke-tested in CI)
-- [x] macOS: the same loop on top of `FSEvents` (beta)
+- [x] macOS: the same loop on top of `FSEvents`
 - [x] Better detection: process attribution (who touched the file), canary honey-files, ransom notes, rename-burst detection
 - [x] YARA rules (minimal built-in: content phrases of ransom notes)
 - [x] Self-update: `aegis update` pulls the latest GitHub release and swaps its own binary
