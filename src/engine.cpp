@@ -26,6 +26,10 @@ static const wchar_t* kSuspiciousExt[] = {
     L".cryptolocker",       L".cerber",              L".wnry",   L".wcry",
     L".onion",  L".cryp1",  L".osiris", L".zepto",     L".odcodc", L".paymessage",
     L".kraken", L".gravity", L".tevac", L".r4a",       L".lock93", L".party",
+    L".lockbit", L".blackcat", L".alphv", L".conti",  L".phobos", L".ryuk",
+    L".akira",   L".play",     L".hive",  L".revil",  L".sodinokibi",
+    L".maze",    L".egregor",  L".darkside", L".avoslocker", L".babuk",
+    L".clop",    L".stop",     L".djvu",  L".medusalocker",
 };
 
 // Форматы, где высокая энтропия это норма (сжатие/контейнер) — не подозреваем их
@@ -59,6 +63,8 @@ static const wchar_t* kRansomNoteTokens[] = {
     L"recover_files",  L"decrypt_files",  L"help_decrypt", L"help_restore",
     L"your_files",     L"allyourfiles",   L"restore_files", L"_what_is_this",
     L"pay_to_unlock",  L"ransom",         L"readme_decrypt",
+    L"howtorecover",   L"decryption_instructions", L"decrypt_instruction",
+    L"recovery_instructions", L"filesencrypted",
 };
 
 static bool isRansomNoteName(const std::wstring& name) {
