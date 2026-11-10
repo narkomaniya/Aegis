@@ -90,11 +90,18 @@ static void banner() {
     const wchar_t* platform = L"linux";
 #endif
     console(L"");
-    console(L"    ___   ____   ____  ___ ____    _   ___   ___");
-    console(L"   / _ \\ / ___| / ___|/ _ \\__  |  / \\ | _ \\ / _ \\");
-    console(L"  | | | |\\___ \\| |  _| | | |/ /  / _ \\| |_)| | | |");
-    console(L"  | |_| | ___) | |_| | |_| / /_ / ___ \\  _/| |_| |");
-    console(L"   \\___/ |____/ \\____|\\___/____/_/   \\_\\_|  \\___/");
+    console(L"     ______________");
+    console(L"    |              |");
+    console(L"    |  A E G I S   |");
+    console(L"    |==============|");
+    console(L"    |shield of Zeus|");
+    console(L"    |              |");
+    console(L"    |______________|");
+    console(L"     \\____________/");
+    console(L"       \\________/");
+    console(L"         \\____/");
+    console(L"           \\/");
+    console(L"");
     console(std::wstring(L"  --- file guardian | v0.2 (") + platform +
             L") | c++17 ---");
     console(L"");
