@@ -11,7 +11,7 @@ and takes dangerous files into quarantine before they can be encrypted or corrup
 └─────────────┘                 └──────────┘             └────────────┘
 ```
 
-## How it works (v0.2)
+## How it works (v3.0)
 
 - **Watcher** — uses the OS file-change API to receive events: file created,
   modified, deleted, renamed. `ReadDirectoryChangesW` on Windows,
@@ -80,6 +80,8 @@ build\aegis.exe restore 2     # take file #2 back out of quarantine
 build\aegis.exe update        # check GitHub releases; if a newer version
                               # exists, download it and swap Aegis's own
                               # binary (aegis update -y to skip the prompt)
+build\aegis.exe autostart on  # start Aegis automatically with the system
+build\aegis.exe autostart off # disable autostart
 ```
 
 Interactive commands while watching: `status`, `quarantine`, `help`, `q` (exit).
@@ -93,6 +95,12 @@ platform asset (`aegis.exe` / `aegis-linux` / `aegis-macos`) and swaps it
 in-place: the running binary is renamed to `*.old` (allowed on all three OS),
 the new one takes its place, with rollback if anything fails. Leftover
 `*.old` files are swept at the next start.
+
+## Autostart
+
+`aegis autostart on` registers Aegis to start with the user session
+(no admin rights needed): HKCU Run on Windows, XDG `~/.config/autostart`
+on Linux, `~/Library/LaunchAgents` on macOS. `aegis autostart off` removes it.
 
 ## Download
 
@@ -109,8 +117,8 @@ no compiler needed.
 - [x] Better detection: process attribution (who touched the file), canary honey-files, ransom notes, rename-burst detection
 - [x] YARA rules (minimal built-in: content phrases of ransom notes)
 - [x] Self-update: `aegis update` pulls the latest GitHub release and swaps its own binary
-- [ ] Auto-start with the system (`aegis autostart on|off`)
-- [ ] Signed / notarized macOS builds
+- [x] Auto-start with the system (`aegis autostart on|off`)
+- [x] Signed / notarized macOS builds
 
 ## About the project
 

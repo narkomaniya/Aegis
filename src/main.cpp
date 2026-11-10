@@ -23,6 +23,7 @@
 #include "quarantine.h"
 #include "version.h"
 #include "updater.h"
+#include "autostart.h"
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -122,6 +123,7 @@ static void printHelp() {
     console(L"  aegis restore                    list quarantine records with numbers");
     console(L"  aegis restore <number>           take a file back out of quarantine");
     console(L"  aegis update [-y]                check GitHub and update Aegis itself");
+    console(L"  aegis autostart on|off           start Aegis automatically with the system");
     console(L"  aegis help                       this help");
     console(L"");
     console(L"Commands while watching:");
@@ -365,6 +367,14 @@ int main(int argc, char** argv) {
         for (const auto& a : args)
             if (a == L"-y" || a == L"--yes") assumeYes = true;
         return runUpdate(assumeYes);
+    }
+    if (args[0] == L"autostart") {
+        args.erase(args.begin());
+        if (args.empty()) {
+            warn(L"usage: aegis autostart on|off");
+            return 1;
+        }
+        return runAutostart(args[0]);
     }
     if (args[0] == L"restore") {
         args.erase(args.begin());

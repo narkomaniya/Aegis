@@ -83,7 +83,7 @@ static bool httpGetToFile(const std::wstring& url, const std::wstring& dest) {
 }
 
 // Путь к собственному бинарю
-static std::wstring selfPath() {
+std::wstring selfPath() {
 #ifdef _WIN32
     wchar_t buf[2048] = {};
     DWORD n = GetModuleFileNameW(nullptr, buf, 2048);

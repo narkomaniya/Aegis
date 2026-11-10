@@ -12,6 +12,7 @@ add_executable(aegis
     src/quarantine.cpp
     src/attribution.cpp
     src/updater.cpp
+    src/autostart.cpp
 )
 
 if(WIN32)

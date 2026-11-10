@@ -11,4 +11,7 @@ int runUpdate(bool assumeYes);
 // удалить остаток *.old от прошлого самообновления (best effort)
 void cleanupOldBinary();
 
+// путь к собственному бинарю (используется апдейтером и автозапуском)
+std::wstring selfPath();
+
 } // namespace ae
