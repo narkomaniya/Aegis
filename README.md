@@ -1,9 +1,10 @@
 # 🛡️ Aegis
 
-**Aegis** is a guardian for your files. It watches your folders (Desktop, Documents,
-Downloads), detects ransomware-like behavior the way real antivirus engines do,
-and takes dangerous files into quarantine before they can be encrypted or corrupted.
-**The project is no longer in beta — Aegis is ready for everyday use.**
+**Aegis** is a cross-platform guardian for your files. It watches your folders (Desktop, Documents, Downloads), detects ransomware-like behavior the way real antivirus engines do, and takes dangerous files into quarantine before they can be encrypted or corrupted.
+
+**Aegis is ready for everyday use (no longer in beta).**
+
+> **About:** Aegis was created as a personal **cybersecurity** project by a **13-year-old developer** to learn systems programming in C++ and to build something that actually helps protect people’s files from ransomware.
 
 ```
 ┌─────────────┐    OS events    ┌──────────┐   verdict   ┌────────────┐
@@ -11,6 +12,26 @@ and takes dangerous files into quarantine before they can be encrypted or corrup
 │ (monitoring)│                 │ (rules)  │             │  (custody) │
 └─────────────┘                 └──────────┘             └────────────┘
 ```
+
+## Features
+
+- **Cross-platform protection** — native watchers on Windows (`ReadDirectoryChangesW`), Linux (`inotify`), and macOS (`FSEvents`), one background thread per platform.
+- **Ransomware-like behavior detection**:
+  - Dangerous extensions (`.locked`, `.enc`, `.wnry`, `.cerber`, …)
+  - High-entropy content in new/modified files (first 8 KiB, compressed formats excluded)
+  - Mass file-change rate (>150/s) → 30s emergency mode
+  - Canary honey-files planted in every watched folder (tamper = instant alert, auto-replanted)
+  - Ransom-note filenames and content phrases (minimal YARA-style scan of first 16 KiB in text files)
+  - Mass rename bursts (>15/s), typical of encryption
+- **Process attribution** — records which process holds/touched the quarantined file (Windows Restart Manager, `/proc/<pid>/fd` on Linux).
+- **Quarantine & restore** — threats are moved to `~/.aegis/quarantine` with `meta.txt` (origin, time, reason, culprit); nothing is destroyed. `aegis restore <n>` brings files back.
+- **Self-update** — `aegis update` checks GitHub Releases and swaps the binary in-place (with rollback).
+- **Autostart** — `aegis autostart on|off` registers Aegis with the user session (HKCU Run / XDG autostart / LaunchAgent), no admin rights needed.
+- **Low footprint** — ~7 MB RSS resident (8 KiB entropy sampling, capped bookkeeping, periodic working-set trim).
+- **Centered terminal UI** — large Aegis shield banner and centered output for comfortable reading.
+- **Logging** — activity written to `%USERPROFILE%\.aegis\aegis.log`.
+- **CLI** — `watch`, `quarantine`, `restore`, `update`, `autostart`, `help`; interactive `status`/`quarantine`/`restore`/`q` while watching. Built with C++17, MIT licensed.
+
 
 ## How it works (v3.0)
 
@@ -123,6 +144,6 @@ no compiler needed.
 
 ## About the project
 
-Aegis is a personal educational project in systems programming with C++:
-OS-level APIs, multithreading, filesystem work, and the fundamentals of
-information security.
+Aegis was created as a personal **cybersecurity** project by a **13-year-old developer** to learn systems programming in C++ and to build real protection against ransomware-like threats.
+
+It explores OS-level APIs, multithreading, filesystem work, and the fundamentals of information security. Ready for everyday use on Windows, Linux, and macOS.
