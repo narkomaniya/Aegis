@@ -11,6 +11,10 @@
 #include <windows.h>
 #include <io.h>
 #include <fcntl.h>
+#else
+#include <sys/ioctl.h>
+#include <unistd.h>
+#include <cstdlib>
 #endif
 
 namespace ae {
@@ -50,17 +54,49 @@ static std::string toAnsi(const std::wstring& w) {
 }
 #endif
 
+// ширина терминала (для центрирования интерфейса)
+static int termWidth() {
+#ifdef _WIN32
+    CONSOLE_SCREEN_BUFFER_INFO info{};
+    HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (GetConsoleScreenBufferInfo(h, &info) && info.dwSize.X > 0)
+        return (int)info.dwSize.X;
+    return 80;
+#else
+    struct winsize ws{};
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0)
+        return (int)ws.ws_col;
+    if (const char* c = std::getenv("COLUMNS")) {
+        int v = std::atoi(c);
+        if (v > 0) return v;
+    }
+    return 80;
+#endif
+}
+
+// центрирование строки по ширине терминала (ANSI-цвета в ширину не считаем)
+static std::wstring centerLine(const std::wstring& line) {
+    const std::wstring visible = stripColors(line);
+    const int w = termWidth();
+    const int len = (int)visible.size();
+    if (len >= w) return line;                  // строка шире терминала — как есть
+    std::wstring out((size_t)((w - len) / 2), L' ');
+    out += line;
+    return out;
+}
+
 // Единая точка вывода: консоль понимает русский+цвета, труба — обычные байты
 static void emit(const std::wstring& line, bool newline) {
+    const std::wstring out = centerLine(line);
 #ifdef _WIN32
     if (kIsTty) {
-        std::wcout << line;
+        std::wcout << out;
     } else {
-        std::string bytes = toAnsi(stripColors(line));
+        std::string bytes = toAnsi(stripColors(out));
         fwrite(bytes.data(), 1, bytes.size(), stdout);
     }
 #else
-    std::wcout << stripColors(line);
+    std::wcout << stripColors(out);
 #endif
     if (newline) {
 #ifdef _WIN32

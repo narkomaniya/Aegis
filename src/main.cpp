@@ -92,19 +92,24 @@ static void banner() {
     const wchar_t* platform = L"linux";
 #endif
     console(L"");
-    console(L"     ______________");
-    console(L"    |              |");
-    console(L"    |  A E G I S   |");
-    console(L"    |==============|");
-    console(L"    |shield of Zeus|");
-    console(L"    |              |");
-    console(L"    |______________|");
-    console(L"     \\____________/");
-    console(L"       \\________/");
-    console(L"         \\____/");
-    console(L"           \\/");
+    console(L"        ________________________________");
+    console(L"        ||                            ||");
+    console(L"        ||                            ||");
+    console(L"        ||     A   E   G   I   S      ||");
+    console(L"        ||============================||");
+    console(L"        ||s h i e l d   o f   Z e u s ||");
+    console(L"        ||                            ||");
+    console(L"        ||____________________________||");
+    console(L"          \\____________________________/");
+    console(L"            \\________________________/  ");
+    console(L"              \\____________________/    ");
+    console(L"                \\________________/      ");
+    console(L"                  \\____________/        ");
+    console(L"                    \\________/          ");
+    console(L"                      \\____/            ");
+    console(L"                        \\/              ");
     console(L"");
-    console(std::wstring(L"  --- file guardian | ") + ae::kVersion +
+    console(std::wstring(L"    --- file guardian | ") + ae::kVersion +
             L" (" + platform + L") | c++17 ---");
     console(L"");
 }
