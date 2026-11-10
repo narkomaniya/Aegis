@@ -21,6 +21,8 @@
 #include "watcher.h"
 #include "engine.h"
 #include "quarantine.h"
+#include "version.h"
+#include "updater.h"
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -102,8 +104,8 @@ static void banner() {
     console(L"         \\____/");
     console(L"           \\/");
     console(L"");
-    console(std::wstring(L"  --- file guardian | v0.2 (") + platform +
-            L") | c++17 ---");
+    console(std::wstring(L"  --- file guardian | ") + ae::kVersion +
+            L" (" + platform + L") | c++17 ---");
     console(L"");
 }
 
@@ -114,6 +116,7 @@ static void printHelp() {
     console(L"  aegis quarantine                 show quarantine contents");
     console(L"  aegis restore                    list quarantine records with numbers");
     console(L"  aegis restore <number>           take a file back out of quarantine");
+    console(L"  aegis update [-y]                check GitHub and update Aegis itself");
     console(L"  aegis help                       this help");
     console(L"");
     console(L"Commands while watching:");
@@ -339,6 +342,9 @@ int main(int argc, char** argv) {
     std::vector<std::wstring> args;
     for (int i = 1; i < argc; ++i) args.push_back(toW(argv[i]));
 
+    // остатки прошлых самообновлений *.old — best effort
+    ae::cleanupOldBinary();
+
     if (args.empty() || args[0] == L"help" || args[0] == L"--help" || args[0] == L"/?") {
         printHelp();
         return 0;
@@ -348,6 +354,13 @@ int main(int argc, char** argv) {
         return runWatch(args);
     }
     if (args[0] == L"quarantine") return runQuarantineList();
+    if (args[0] == L"update") {
+        args.erase(args.begin());
+        bool assumeYes = false;
+        for (const auto& a : args)
+            if (a == L"-y" || a == L"--yes") assumeYes = true;
+        return runUpdate(assumeYes);
+    }
     if (args[0] == L"restore") {
         args.erase(args.begin());
         Quarantine q(quarantineRoot());

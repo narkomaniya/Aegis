@@ -72,10 +72,22 @@ build\aegis.exe watch D:\dir  # watch a specific folder
 build\aegis.exe quarantine    # show quarantine records
 build\aegis.exe restore       # quarantine records with numbers
 build\aegis.exe restore 2     # take file #2 back out of quarantine
+build\aegis.exe update        # check GitHub releases; if a newer version
+                              # exists, download it and swap Aegis's own
+                              # binary (aegis update -y to skip the prompt)
 ```
 
 Interactive commands while watching: `status`, `quarantine`, `help`, `q` (exit).
-Logs are written to `%USERPROFILE%\.aegis\aegis.log`.
+Logs are written to `%USERPROFILE%\\.aegis\\aegis.log`.
+
+## Self-update
+
+`aegis update` asks the GitHub API for the latest release, compares versions
+numerically (`v0.10 > v0.2`), and if a newer build exists it downloads the
+platform asset (`aegis.exe` / `aegis-linux` / `aegis-macos`) and swaps it
+in-place: the running binary is renamed to `*.old` (allowed on all three OS),
+the new one takes its place, with rollback if anything fails. Leftover
+`*.old` files are swept at the next start.
 
 ## Download
 
@@ -91,7 +103,8 @@ no compiler needed.
 - [x] macOS: the same loop on top of `FSEvents` (beta)
 - [x] Better detection: process attribution (who touched the file), canary honey-files, ransom notes, rename-burst detection
 - [ ] YARA rules
-- [ ] Self-update + auto-start with the system
+- [x] Self-update: `aegis update` pulls the latest GitHub release and swaps its own binary
+- [ ] Auto-start with the system (`aegis autostart on|off`)
 - [ ] Signed / notarized macOS builds
 
 ## About the project
