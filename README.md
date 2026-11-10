@@ -39,6 +39,11 @@ and takes dangerous files into quarantine before they can be encrypted or corrup
      who currently holds that file open (Restart Manager on Windows,
      `/proc/<pid>/fd` on Linux) and records the culprit:
      `... | touched by pid 1234 (evil.exe)`.
+  8. **YARA-style content rules (minimal)** — the first 16 KiB of new
+     `.txt/.html/.htm/.md/.ini/.log` files are scanned for fixed ransom-note
+     phrases ("your files have been encrypted", ".onion/", "bitcoin wallet"…).
+     The list is XOR-encoded inside the binary (so antiviruses don't flag
+     Aegis itself for the ransom strings it searches for).
 - **Quarantine** — each taken file lives in its own folder with a `meta.txt`
   (original path, time, the reason it was taken, and who touched it).
   Nothing is destroyed: "delete" here means "remove from the victim folder,
@@ -102,7 +107,7 @@ no compiler needed.
 - [x] Linux: the same loop on top of `inotify` (compiled and smoke-tested in CI)
 - [x] macOS: the same loop on top of `FSEvents` (beta)
 - [x] Better detection: process attribution (who touched the file), canary honey-files, ransom notes, rename-burst detection
-- [ ] YARA rules
+- [x] YARA rules (minimal built-in: content phrases of ransom notes)
 - [x] Self-update: `aegis update` pulls the latest GitHub release and swaps its own binary
 - [ ] Auto-start with the system (`aegis autostart on|off`)
 - [ ] Signed / notarized macOS builds

@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <cwctype>
 #include <filesystem>
 #include <fstream>
@@ -72,6 +73,69 @@ static bool isRansomNoteName(const std::wstring& name) {
     for (const wchar_t* tok : kRansomNoteTokens)
         if (low.find(tok) != std::wstring::npos) return true;
     return false;
+}
+
+// Минимум в духе YARA: типовые фразы выкупа ВНУТРИ записки.
+// Полноценный движок правил не городим — фиксированного списка достаточно
+// для тихой проверки первых 16 КиБ у новых текстовых файлов.
+//
+// ВАЖНО: фразы хранятся XOR-кодированными (ключ 0x55) и расшифровываются
+// только в памяти при сканировании. Антивирусы ищут в бинаре строки вида
+// "your files are encrypted" / "send bitcoin" — наши голые строки в тексте
+// программы давали false positive: Defender съел первый билд как
+// Ransom:Win32/Avaddon. Кодированные — сигнатуры в бинаре нет.
+//
+// Хранение ПЛОСКОЕ: все фразы одной последовательностью байт по UTF-8,
+// разделитель 0x00 (как C-строки). ВАЖНО: не среды к типу [N][36] —
+// без внутренних скобок C++ заполняет строки плоско и "съедает" границы!
+static const char kRansomContentEnc[] = {
+        '\x2c','\x3a','\x20','\x27','\x75','\x33','\x3c','\x39','\x30','\x26','\x75','\x34','\x27','\x30','\x75','\x30','\x3b','\x36','\x27','\x2c','\x25','\x21','\x30','\x31', 0,
+        '\x2c','\x3a','\x20','\x27','\x75','\x33','\x3c','\x39','\x30','\x26','\x75','\x3d','\x34','\x23','\x30','\x75','\x37','\x30','\x30','\x3b','\x75','\x30','\x3b','\x36','\x27','\x2c','\x25','\x21','\x30','\x31', 0,
+        '\x34','\x39','\x39','\x75','\x2c','\x3a','\x20','\x27','\x75','\x33','\x3c','\x39','\x30','\x26','\x75','\x3d','\x34','\x23','\x30','\x75','\x37','\x30','\x30','\x3b','\x75','\x30','\x3b','\x36','\x27','\x2c','\x25','\x21','\x30','\x31', 0,
+        '\x22','\x30','\x75','\x22','\x3c','\x39','\x39','\x75','\x31','\x30','\x36','\x27','\x2c','\x25','\x21','\x75','\x2c','\x3a','\x20','\x27', 0,
+        '\x27','\x30','\x34','\x31','\x38','\x30','\x75','\x33','\x3a','\x27','\x75','\x31','\x30','\x36','\x27','\x2c','\x25','\x21', 0,
+        '\x27','\x30','\x26','\x21','\x3a','\x27','\x30','\x75','\x33','\x3c','\x39','\x30','\x26','\x75','\x33','\x3a','\x27','\x75','\x33','\x30','\x30', 0,
+        '\x7b','\x3a','\x3b','\x3c','\x3a','\x3b','\x7a', 0,
+        '\x21','\x3a','\x27','\x75','\x37','\x27','\x3a','\x22','\x26','\x30','\x27','\x75','\x21','\x3a','\x75','\x31','\x30','\x36','\x27','\x2c','\x25','\x21', 0,
+        '\x37','\x3c','\x21','\x36','\x3a','\x3c','\x3b','\x75','\x22','\x34','\x39','\x39','\x30','\x21', 0,
+        '\x26','\x30','\x3b','\x31','\x75','\x37','\x3c','\x21','\x36','\x3a','\x3c','\x3b', 0,
+        '\x21','\x27','\x34','\x3b','\x26','\x33','\x30','\x27','\x75','\x21','\x3d','\x30','\x75','\x34','\x38','\x3a','\x20','\x3b','\x21', 0,
+};
+
+// Расшифровка одного токена (в памяти, на лету)
+static std::string ransomToken(const char* enc) {
+    std::string out;
+    while (*enc) { out.push_back((char)((unsigned char)*enc ^ 0x55)); ++enc; }
+    return out;
+}
+
+static std::string lowerAscii(std::string s) {
+    for (char& c : s) if (c >= 'A' && c <= 'Z') c += 32;
+    return s;
+}
+
+// Возвращает первую сработавшую фразу (расшифрованную) или пустую строку.
+static std::string ransomContentHit(const std::wstring& full) {
+    std::error_code ec;
+    if (fs::file_size(fs::path(full), ec) == 0 || ec) return "";
+
+    std::ifstream f(fs::path(full), std::ios::binary);
+    if (!f) return "";
+
+    constexpr size_t N = 16384;          // как у энтропии — только начало
+    std::string buf;
+    buf.resize(N);
+    f.read(&buf[0], N);
+    buf.resize((size_t)f.gcount());
+
+    std::string low = lowerAscii(buf);
+    const char* enc = kRansomContentEnc;
+    while (*enc) {
+        std::string tok = ransomToken(enc);
+        if (low.find(tok) != std::string::npos) return tok;
+        enc += tok.size() + 1;          // перепрыгнуть 0x00-разделитель
+    }
+    return "";
 }
 
 static std::wstring extOf(const std::wstring& file) {
@@ -330,6 +394,22 @@ void Engine::onEvent(const FileEvent& e) {
     if (isRansomNoteName(e.name)) {
         take(e, full, L"ransom note detected: " + e.name, false);
         return;
+    }
+
+    // 0c-2) Минимум в духе YARA: фразы выкупа внутри содержимого.
+    //   Только текстовые расширения (записки всегда .txt/.html/.htm),
+    //   только первые 16 КиБ — дёшево, бинари не трогаем.
+    if (e.action == EventAction::Created || e.action == EventAction::Modified) {
+        static const wchar_t* kNoteExtsSc[] =
+            { L".txt", L".html", L".htm", L".md", L".ini", L".log" };
+        if (inList(ext, kNoteExtsSc, sizeof(kNoteExtsSc) / sizeof(wchar_t*))) {
+            const std::string hit = ransomContentHit(full);
+            if (!hit.empty()) {
+                std::wstring hitw(hit.begin(), hit.end());
+                take(e, full, L"ransom note content: \"" + hitw + L"\"", false);
+                return;
+            }
+        }
     }
 
     // 1) Renamed a normal file into a dangerous extension
