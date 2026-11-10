@@ -9,6 +9,7 @@
 #include "logger.h"
 #include "updater.h"   // ae::selfPath()
 
+#include <cstring>
 #include <filesystem>
 #include <string>
 
