@@ -27,9 +27,26 @@ and takes dangerous files into quarantine before they can be encrypted or corrup
   3. **Mass modification rate**: when more than 150 files change within a second,
      Aegis triggers an emergency mode for 30 seconds — every new file is
      copied into quarantine.
+  4. **Canary honey-files** — a hidden `.aegis-canary.txt` is planted into every
+     watched folder. Ransomware touches *everything*; any change to the canary
+     is an instant tamper alert. If the canary is deleted, it is re-planted
+     immediately (the trap digs itself back in).
+  5. **Ransom-note patterns** — files like `HOW_TO_DECRYPT.txt` created in a
+     watched folder are taken straight to quarantine.
+  6. **Mass rename burst** — ransomware renames its victims during encryption;
+     more than 15 renames per second triggers the emergency mode.
+  7. **Process attribution** — when a threat is quarantined, Aegis asks the OS
+     who currently holds that file open (Restart Manager on Windows,
+     `/proc/<pid>/fd` on Linux) and records the culprit:
+     `... | touched by pid 1234 (evil.exe)`.
 - **Quarantine** — each taken file lives in its own folder with a `meta.txt`
-  (original path, time, and the reason it was taken). Nothing is destroyed:
-  "delete" here means "remove from the victim folder, keep in custody".
+  (original path, time, the reason it was taken, and who touched it).
+  Nothing is destroyed: "delete" here means "remove from the victim folder,
+  keep in custody".
+- **Low footprint** — the resident watcher keeps ~7 MB RSS: entropy is sampled
+  from the first 8 KiB only, bookkeeping lists are capped, and on Windows the
+  working set is trimmed every 1024 events so the guardian can stay resident
+  for months without growing.
 
 ## Build
 
@@ -72,7 +89,8 @@ no compiler needed.
 - [x] `aegis restore <n>` — take a file back out of quarantine (Windows + Linux + macOS)
 - [x] Linux: the same loop on top of `inotify` (compiled and smoke-tested in CI)
 - [x] macOS: the same loop on top of `FSEvents` (beta)
-- [ ] Better detection: process attribution (who touched the file), YARA rules
+- [x] Better detection: process attribution (who touched the file), canary honey-files, ransom notes, rename-burst detection
+- [ ] YARA rules
 - [ ] Self-update + auto-start with the system
 - [ ] Signed / notarized macOS builds
 

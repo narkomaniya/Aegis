@@ -10,6 +10,7 @@ add_executable(aegis
     src/watcher.cpp
     src/engine.cpp
     src/quarantine.cpp
+    src/attribution.cpp
 )
 
 if(WIN32)

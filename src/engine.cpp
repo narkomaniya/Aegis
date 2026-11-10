@@ -1,6 +1,7 @@
 // engine.cpp
 #include "engine.h"
 #include "logger.h"
+#include "attribution.h"
 
 #include <algorithm>
 #include <cmath>
@@ -38,6 +39,39 @@ static std::wstring lower(const std::wstring& s) {
     std::wstring r = s;
     std::transform(r.begin(), r.end(), r.begin(), ::towlower);
     return r;
+}
+
+// ---- Canary-ловушка: тихий файл-детектор в каждой наблюдаемой папке ----
+// Шифровальщики трогают ВСЕ файлы; любое касание ловушки = точное знание,
+// что в папке хозяйничает не человек (и не сам Aegis).
+static const wchar_t* kCanaryName = L".aegis-canary.txt";
+static const char* kCanaryText =
+    "Aegis canary file.\n"
+    "This file is monitored by Aegis (file guardian). If this file is\n"
+    "changed, moved or deleted, something touched this folder without\n"
+    "permission and Aegis already reacted.\n"
+    "Do not delete.\n";
+
+// ---- Записки выкупа: имена файлов, которые создают шифровальщики ----
+static const wchar_t* kRansomNoteTokens[] = {
+    L"how_to_decrypt", L"how_to_recover", L"how_to_fix",  L"readme_for_decrypt",
+    L"recover_files",  L"decrypt_files",  L"help_decrypt", L"help_restore",
+    L"your_files",     L"allyourfiles",   L"restore_files", L"_what_is_this",
+    L"pay_to_unlock",  L"ransom",         L"readme_decrypt",
+};
+
+static bool isRansomNoteName(const std::wstring& name) {
+    const std::wstring low = lower(name);
+    // записки обычно .txt/.html/.htm
+    const std::wstring ext = low.substr(low.find_last_of(L'.')); // остаётся имя-точка
+    static const wchar_t* kNoteExts[] = { L".txt", L".html", L".htm" };
+    bool okExt = false;
+    for (const wchar_t* e : kNoteExts) if (ext == e) { okExt = true; break; }
+    if (!okExt) return false;
+
+    for (const wchar_t* tok : kRansomNoteTokens)
+        if (low.find(tok) != std::wstring::npos) return true;
+    return false;
 }
 
 static std::wstring extOf(const std::wstring& file) {
@@ -96,11 +130,28 @@ bool Engine::emergencyActive() const {
     return emergency_;
 }
 
-void Engine::noteRate() {
+void Engine::noteRate(bool isRename) {
     auto now = std::chrono::steady_clock::now();
     rate_.push_back(now);
     while (!rate_.empty() && now - rate_.front() > std::chrono::seconds(1))
         rate_.pop_front();
+
+    if (isRename) {
+        renames_.push_back(now);
+        while (!renames_.empty() && now - renames_.front() > std::chrono::seconds(1))
+            renames_.pop_front();
+    }
+}
+
+static void raiseEmergencyLocked(unsigned long long& alerts, bool& emergency,
+                                 std::chrono::steady_clock::time_point& until,
+                                 const std::wstring& why) {
+    if (!emergency) {
+        emergency = true;
+        until = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    }
+    ++alerts;
+    ae::alert(why);
 }
 
 void Engine::checkRate() {
@@ -110,24 +161,49 @@ void Engine::checkRate() {
         return;
     }
     if (rate_.size() > 150) {  // >150 changes per second — no human works this fast
-        emergency_ = true;
-        emergencyUntil_ = std::chrono::steady_clock::now() + std::chrono::seconds(30);
-        ++alerts_;
-        ae::alert(L"EMERGENCY: mass file changes (>150/sec) — "
-                  L"looks like a ransomware attack!");
+        raiseEmergencyLocked(alerts_, emergency_, emergencyUntil_,
+                             L"EMERGENCY: mass file changes (>150/sec) — "
+                             L"looks like a ransomware attack!");
         ae::warn(L"new files will be copied to quarantine for 30 seconds");
     }
 }
 
+void Engine::checkRenames() {
+    if (emergency_) return;   // already in emergency — no duplicate alarm
+    // Ransomware renames victims in bulk: file.txt -> file.txt.<their-ext>.
+    // No human renames >15 files per second.
+    if (renames_.size() > 15) {
+        raiseEmergencyLocked(alerts_, emergency_, emergencyUntil_,
+                             L"ANOMALY: mass rename burst (>15/sec) — "
+                             L"typical ransomware behavior (files are renamed during encryption)");
+        ae::warn(L"new files will be copied to quarantine for 30 seconds");
+    }
+}
+
+// Windows: every ~1024 events we trim the working set of the process.
+// A resident guardian may hang in memory for months — keep the RSS tiny;
+// pages come back from the pagefile instantly when needed.
+void Engine::trimWorkingSet() {
+#ifdef _WIN32
+    SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
+#endif
+}
+
 void Engine::take(const FileEvent& e, const std::wstring& full,
                   const std::wstring& reason, bool copyOnly) {
-    bool done = q_.moveIn(full, reason, copyOnly);
+    // "Who did this?" — platform attribution: on Windows/Linux we find the
+    // processes that currently have the file open.
+    std::wstring who = fileOwner(full);
+    std::wstring reasonFull = reason;
+    if (!who.empty()) reasonFull += L"  | touched by " + who;
+
+    bool done = q_.moveIn(full, reasonFull, copyOnly);
     if (done) {
         ++quarantined_;
         if (copyOnly) {
-            ae::warn(L"copied to quarantine: " + full + L"  (" + reason + L")");
+            ae::warn(L"copied to quarantine: " + full + L"  (" + reasonFull + L")");
         } else {
-            ae::alert(L"THREAT quarantined: " + full + L"  (" + reason + L")");
+            ae::alert(L"THREAT quarantined: " + full + L"  (" + reasonFull + L")");
         }
     } else {
         ae::warn(L"failed to quarantine: " + full);
@@ -137,11 +213,73 @@ void Engine::take(const FileEvent& e, const std::wstring& full,
 
 void Engine::ignorePath(const std::wstring& full) {
     std::lock_guard<std::mutex> lock(m_);
+    if (ignored_.size() >= 512) ignored_.clear();   // потолок памяти: пути restore недолговечны
     ignored_.insert(lower(full));
 }
 
+// Расставить canary-ловушки по наблюдаемым папкам (вызывается ДО запуска
+// слежения, чтобы не поймать собственное создание ловушки).
+void Engine::seedCanaries() {
+    std::error_code ec;
+    for (const auto& root : protectedRoots_) {
+        fs::path dir(root);
+        if (!fs::is_directory(dir, ec) || ec) continue;   // несуществующие тихо пропускаем
+
+        fs::path canary = dir / fs::path(kCanaryName);
+        if (fs::exists(canary, ec) && !ec) continue;     // ловушка уже на месте (не пересоздаём)
+
+        std::ofstream f(canary, std::ios::binary | std::ios::trunc);
+        if (!f) {
+            ae::warn(L"canary could not be created: " + canary.wstring());
+            continue;
+        }
+        f << kCanaryText;
+        f.close();
+
+#ifdef _WIN32
+        // спрятать ловушку от глаз пользователя
+        DWORD attrs = GetFileAttributesW(canary.c_str());
+        if (attrs != INVALID_FILE_ATTRIBUTES)
+            SetFileAttributesW(canary.c_str(),
+                               attrs | FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM);
+#endif
+        ae::info(L"canary deployed: " + canary.wstring());
+    }
+}
+
 void Engine::onEvent(const FileEvent& e) {
-    if (e.action == EventAction::Deleted) return;   // удалять нам нечего, пропускаем
+    // 0) Удалили canary-ловушку? Это sabotage-сигнал отличный от прочих Deleted.
+    if (e.action == EventAction::Deleted) {
+        if (lower(e.name) == kCanaryName) {
+            ae::alert(L"TAMPER ALERT: canary was DELETED: " +
+                      (fs::path(e.dir) / e.name).wstring() +
+                      L" — someone is cleaning the trap!");
+            {
+                std::lock_guard<std::mutex> lock(m_);
+                if (!emergency_) {
+                    emergency_ = true;
+                    emergencyUntil_ = std::chrono::steady_clock::now() +
+                                      std::chrono::seconds(30);
+                }
+                ++alerts_;
+            }
+            // вернуть ловушку на место мгновенно
+            fs::path canary = fs::path(e.dir) / fs::path(kCanaryName);
+            ignorePath(canary.wstring());   // событие создания не ловим сами
+            std::ofstream f(canary, std::ios::binary | std::ios::trunc);
+            if (f) {
+                f << kCanaryText;
+#ifdef _WIN32
+                DWORD attrs = GetFileAttributesW(canary.c_str());
+                if (attrs != INVALID_FILE_ATTRIBUTES)
+                    SetFileAttributesW(canary.c_str(),
+                                       attrs | FILE_ATTRIBUTE_HIDDEN |
+                                       FILE_ATTRIBUTE_SYSTEM);
+#endif
+            }
+        }
+        return;   // обычные удаления нам не интересны
+    }
 
     // Переносимый путь: на Windows сепаратор '\', на macOS/Linux '/'
     std::wstring full = (fs::path(e.dir) / e.name).wstring();
@@ -158,14 +296,41 @@ void Engine::onEvent(const FileEvent& e) {
 
     {
         std::lock_guard<std::mutex> lock(m_);
-        noteRate();
+        ++events_;
+        if (events_ % 1024 == 0) trimWorkingSet();   // маленький RSS на годы работы
+        noteRate(e.action == EventAction::Renamed);
         checkRate();
+        checkRenames();
     }
 
     const std::wstring ext     = extOf(e.name);
     const std::wstring oldExt  = extOf(e.oldName);
     const bool susExt          = inList(ext, kSuspiciousExt,
                                         sizeof(kSuspiciousExt) / sizeof(wchar_t*));
+
+    // 0b) Canary-ловушку тронули: Created/Modified/Renamed у ловушки.
+    // Renamed-ловушку карантиним по НОВОМУ имени (старого уже нет).
+    if (lower(e.name) == kCanaryName) {
+        {
+            std::lock_guard<std::mutex> lock(m_);
+            if (!emergency_) {
+                emergency_ = true;
+                emergencyUntil_ = std::chrono::steady_clock::now() +
+                                  std::chrono::seconds(30);
+            }
+            ++alerts_;
+        }
+        ae::alert(L"TAMPER ALERT: canary touched: " + full +
+                  L" — something is messing with this folder!");
+        take(e, full, L"canary honey-file touched", false);
+        return;
+    }
+
+    // 0c) Записка выкупа: типовое имя "how to decrypt ..." и т.п.
+    if (isRansomNoteName(e.name)) {
+        take(e, full, L"ransom note detected: " + e.name, false);
+        return;
+    }
 
     // 1) Renamed a normal file into a dangerous extension
     if (e.action == EventAction::Renamed &&

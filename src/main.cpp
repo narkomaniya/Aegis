@@ -251,6 +251,7 @@ static int runWatch(std::vector<std::wstring> dirs) {
 
     Quarantine q(qRoot);
     Engine engine(q, dirs);
+    engine.seedCanaries();   // ловушки раскладываем ДО старта слежения
     Watcher watcher([&engine](const FileEvent& e) { engine.onEvent(e); });
 
     size_t added = 0;
