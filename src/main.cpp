@@ -38,10 +38,12 @@
 #include <objbase.h>
 #include <io.h>
 #include <fcntl.h>
+#include <conio.h>
 #else
 #include <locale>
 #include <codecvt>
 #include <fstream>
+#include <unistd.h>
 #endif
 
 namespace fs = std::filesystem;
@@ -115,6 +117,19 @@ static void banner() {
     console(L"");
 }
 
+static void clearScreen() {
+    // ANSI clear + home (VT enabled in setupConsole). Fallback for odd terminals.
+    std::wcout << L"\033[2J\033[H";
+    std::wcout.flush();
+}
+
+static void waitEnter(const std::wstring& msg = L"Press Enter to return to menu...") {
+    console(L"");
+    console(msg);
+    std::wstring dummy;
+    std::getline(std::wcin, dummy);
+}
+
 static void printHelp() {
     console(L"Commands:");
     console(L"  aegis watch [dir1 dir2 ...]      watch folders");
@@ -131,7 +146,6 @@ static void printHelp() {
     console(L"  restore [n]  list / take back    help         help");
     console(L"  q            exit");
 }
-
 static std::wstring homeDir() {
 #ifdef _WIN32
     const char* up = std::getenv("USERPROFILE");
@@ -252,7 +266,106 @@ static int doRestoreByNumber(Quarantine& q, Engine* engine,
     return 1;
 }
 
-static int runWatch(std::vector<std::wstring> dirs) {
+static void showHeader() {
+    clearScreen();
+    banner();
+}
+
+static void quarantineMenu(Quarantine& q, Engine* engine) {
+    while (true) {
+        showHeader();
+        console(L"  [ QUARANTINE ]");
+        console(L"");
+        auto recs = q.records();
+        if (recs.empty()) {
+            console(L"  quarantine is empty");
+        } else {
+            int i = 1;
+            for (const auto& r : recs) {
+                console(L"  [" + std::to_wstring(i++) + L"] " + r.file);
+                console(L"      from:   " + r.from);
+                console(L"      reason: " + r.reason);
+            }
+        }
+        console(L"");
+        if (!recs.empty()) console(L"  Enter number to restore, or 0 to go back");
+        else console(L"  0. Back");
+        prompt(L"  > ");
+        std::wstring line;
+        if (!std::getline(std::wcin, line)) return;
+        line = trimW(line);
+        if (line == L"0" || line.empty()) return;
+        bool allDigits = !line.empty();
+        for (wchar_t c : line) if (c < L'0' || c > L'9') { allDigits = false; break; }
+        if (allDigits) {
+            showHeader();
+            console(L"  [ QUARANTINE ]");
+            console(L"");
+            doRestoreByNumber(q, engine, line);
+            waitEnter();
+        }
+    }
+}
+
+static void autostartMenu() {
+    while (true) {
+        showHeader();
+        console(L"  [ AUTOSTART ]");
+        console(L"");
+        console(L"  1. Enable autostart");
+        console(L"  2. Disable autostart");
+        console(L"  0. Back");
+        console(L"");
+        prompt(L"  > ");
+        std::wstring line;
+        if (!std::getline(std::wcin, line)) return;
+        line = trimW(line);
+        if (line == L"0" || line.empty()) return;
+        if (line == L"1" || line == L"2") {
+            showHeader();
+            console(L"  [ AUTOSTART ]");
+            console(L"");
+            runAutostart(line == L"1" ? L"on" : L"off");
+            waitEnter();
+        }
+    }
+}
+
+static void updateMenu() {
+    showHeader();
+    console(L"  [ UPDATE ]");
+    console(L"");
+    console(L"  Check GitHub for a new version and update Aegis.");
+    console(L"");
+    console(L"  1. Check and update (ask before installing)");
+    console(L"  2. Check and update (auto-yes)");
+    console(L"  0. Back");
+    console(L"");
+    prompt(L"  > ");
+    std::wstring line;
+    if (!std::getline(std::wcin, line)) return;
+    line = trimW(line);
+    if (line == L"1" || line == L"2") {
+        showHeader();
+        console(L"  [ UPDATE ]");
+        console(L"");
+        runUpdate(line == L"2");
+        waitEnter();
+    }
+}
+
+static void helpScreen() {
+    showHeader();
+    console(L"  [ HELP ]");
+    console(L"");
+    console(L"  Aegis watches your folders and moves ransomware-like threats");
+    console(L"  to quarantine before they can do damage.");
+    console(L"");
+    printHelp();
+    waitEnter();
+}
+
+static int runWatch(std::vector<std::wstring> dirs, bool fromMenu) {
     if (dirs.empty()) {  // стандартный набор: то, что чаще всего атакуют
         pushDefaultDir(dirs, 0);  // Desktop
         pushDefaultDir(dirs, 1);  // Documents
@@ -281,49 +394,99 @@ static int runWatch(std::vector<std::wstring> dirs) {
     }
     if (added == 0) {
         warn(L"nothing to watch — exiting");
+        if (fromMenu) waitEnter();
         return 1;
     }
 
     ok(L"Aegis is on duty. Quarantine: " + qRoot);
-    info(L"commands: status | quarantine | restore | help | q(exit)");
     console(L"");
 
     watcher.start();
 
-    // Командный цикл в главном потоке
-    std::wstring line;
+    // Меню в режиме наблюдения (как в zapret: выбор -> экран -> действие -> Enter -> меню)
     while (true) {
-        prompt(L"aegis> ");
-        if (!std::getline(std::wcin, line)) break;  // Ctrl+C / Ctrl+Z
-        for (auto& c : line) c = towlower(c);
-
-        if (line == L"q" || line == L"quit" || line == L"exit") {
-            break;
-        } else if (line == L"status") {
-            console(L"  quarantined:         " + std::to_wstring(engine.quarantinedCount()));
-            console(L"  alerts:              " + std::to_wstring(engine.alertCount()));
-            console(L"  emergency mode:      " +
-                    std::wstring(engine.emergencyActive() ? L"YES" : L"no"));
-            console(L"  folders watched:     " + std::to_wstring(added));
-        } else if (line == L"quarantine") {
-            auto items = q.list();
-            if (items.empty()) console(L"  quarantine is empty");
-            for (const auto& it : items) console(L"  - " + it);
-        } else if (line == L"restore") {
-            printRecordList(q);
-            console(L"  to take a file back: restore <number>");
-        } else if (line.rfind(L"restore ", 0) == 0) {
-            doRestoreByNumber(q, &engine, trimW(line.substr(8)));
-        } else if (line == L"help") {
+        if (fromMenu) {
+            showHeader();
+            console(L"  [ WATCHING ]  Aegis is on duty");
             console(L"");
-            printHelp();
-        } else if (!line.empty()) {
-            console(L"unknown command: try help");
+            console(L"  1. Status");
+            console(L"  2. Quarantine");
+            console(L"  3. Restore a file");
+            console(L"  4. Help");
+            console(L"  0. Stop watching (back to main menu)");
+            console(L"");
+            prompt(L"  > ");
+        } else {
+            prompt(L"aegis> ");
         }
+        std::wstring line;
+        if (!std::getline(std::wcin, line)) break;
+        line = trimW(line);
+        std::wstring low = line;
+        for (auto& c : low) c = towlower(c);
+
+        bool stop = false;
+        if (fromMenu) {
+            if (low == L"0" || low == L"q" || low == L"quit" || low == L"exit" || low.empty()) {
+                stop = true;
+            } else if (low == L"1" || low == L"status") {
+                showHeader();
+                console(L"  [ STATUS ]");
+                console(L"");
+                console(L"  quarantined:     " + std::to_wstring(engine.quarantinedCount()));
+                console(L"  alerts:          " + std::to_wstring(engine.alertCount()));
+                console(L"  emergency mode:  " +
+                        std::wstring(engine.emergencyActive() ? L"YES" : L"no"));
+                console(L"  folders watched: " + std::to_wstring(added));
+                waitEnter();
+            } else if (low == L"2" || low == L"quarantine") {
+                showHeader();
+                console(L"  [ QUARANTINE ]");
+                console(L"");
+                auto items = q.list();
+                if (items.empty()) console(L"  quarantine is empty");
+                for (const auto& it : items) console(L"  - " + it);
+                waitEnter();
+            } else if (low == L"3" || low == L"restore") {
+                quarantineMenu(q, &engine);
+            } else if (low.rfind(L"restore ", 0) == 0) {
+                showHeader();
+                doRestoreByNumber(q, &engine, trimW(line.substr(8)));
+                waitEnter();
+            } else if (low == L"4" || low == L"help") {
+                helpScreen();
+            }
+        } else {
+            if (low == L"q" || low == L"quit" || low == L"exit") {
+                stop = true;
+            } else if (low == L"status") {
+                console(L"  quarantined:         " + std::to_wstring(engine.quarantinedCount()));
+                console(L"  alerts:              " + std::to_wstring(engine.alertCount()));
+                console(L"  emergency mode:      " +
+                        std::wstring(engine.emergencyActive() ? L"YES" : L"no"));
+                console(L"  folders watched:     " + std::to_wstring(added));
+            } else if (low == L"quarantine") {
+                auto items = q.list();
+                if (items.empty()) console(L"  quarantine is empty");
+                for (const auto& it : items) console(L"  - " + it);
+            } else if (low == L"restore") {
+                printRecordList(q);
+                console(L"  to take a file back: restore <number>");
+            } else if (low.rfind(L"restore ", 0) == 0) {
+                doRestoreByNumber(q, &engine, trimW(line.substr(8)));
+            } else if (low == L"help") {
+                console(L"");
+                printHelp();
+            } else if (!low.empty()) {
+                console(L"unknown command: try help");
+            }
+        }
+        if (stop) break;
     }
 
     watcher.stop();
     ok(L"Aegis stopped. Talk soon!");
+    if (fromMenu) waitEnter();
     return 0;
 }
 
@@ -340,11 +503,49 @@ static int runQuarantineList() {
     return 0;
 }
 
+static int interactiveMenu() {
+    while (true) {
+        showHeader();
+        console(L"  [ MAIN MENU ]");
+        console(L"");
+        console(L"  1. Watch folders (protect Desktop, Documents, Downloads)");
+        console(L"  2. Quarantine (view / restore)");
+        console(L"  3. Update Aegis");
+        console(L"  4. Autostart");
+        console(L"  5. Help");
+        console(L"  0. Exit");
+        console(L"");
+        prompt(L"  > ");
+        std::wstring line;
+        if (!std::getline(std::wcin, line)) break;
+        line = trimW(line);
+        for (auto& c : line) c = towlower(c);
+
+        if (line == L"1" || line == L"watch") {
+            runWatch({}, true);
+        } else if (line == L"2" || line == L"quarantine") {
+            Quarantine q(quarantineRoot());
+            quarantineMenu(q, nullptr);
+        } else if (line == L"3" || line == L"update") {
+            updateMenu();
+        } else if (line == L"4" || line == L"autostart") {
+            autostartMenu();
+        } else if (line == L"5" || line == L"help") {
+            helpScreen();
+        } else if (line == L"0" || line == L"q" || line == L"exit") {
+            clearScreen();
+            banner();
+            ok(L"Bye!");
+            return 0;
+        }
+    }
+    return 0;
+}
+
 int main(int argc, char** argv) {
 #ifdef _WIN32
     setupConsole();
 #endif
-    banner();
 
     std::vector<std::wstring> args;
     for (int i = 1; i < argc; ++i) args.push_back(toW(argv[i]));
@@ -352,16 +553,22 @@ int main(int argc, char** argv) {
     // остатки прошлых самообновлений *.old — best effort
     ae::cleanupOldBinary();
 
-    if (args.empty() || args[0] == L"help" || args[0] == L"--help" || args[0] == L"/?") {
+    if (args.empty()) {
+        return interactiveMenu();
+    }
+    if (args[0] == L"help" || args[0] == L"--help" || args[0] == L"/?") {
+        banner();
         printHelp();
         return 0;
     }
     if (args[0] == L"watch") {
+        banner();
         args.erase(args.begin());
-        return runWatch(args);
+        return runWatch(args, false);
     }
-    if (args[0] == L"quarantine") return runQuarantineList();
+    if (args[0] == L"quarantine") { banner(); return runQuarantineList(); }
     if (args[0] == L"update") {
+        banner();
         args.erase(args.begin());
         bool assumeYes = false;
         for (const auto& a : args)
@@ -369,6 +576,7 @@ int main(int argc, char** argv) {
         return runUpdate(assumeYes);
     }
     if (args[0] == L"autostart") {
+        banner();
         args.erase(args.begin());
         if (args.empty()) {
             warn(L"usage: aegis autostart on|off");
@@ -377,6 +585,7 @@ int main(int argc, char** argv) {
         return runAutostart(args[0]);
     }
     if (args[0] == L"restore") {
+        banner();
         args.erase(args.begin());
         Quarantine q(quarantineRoot());
         if (args.empty()) {  // только список с номерами
@@ -386,6 +595,7 @@ int main(int argc, char** argv) {
         return doRestoreByNumber(q, nullptr, args[0]);
     }
 
+    banner();
     console(L"Unknown command: " + args[0]);
     console(L"");
     printHelp();
