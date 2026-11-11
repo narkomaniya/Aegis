@@ -20,11 +20,13 @@ namespace fs = std::filesystem;
 
 namespace ae {
 
-// Расширения-признаки шифровальщиков
+// Расширения-признаки шифровальщиков.
+// .onion здесь НЕ нужен: это домен в записках, а не расширение зашифрованного
+// файла — ловится контент-сканом и даёт ложные срабатывания как расширение.
 static const wchar_t* kSuspiciousExt[] = {
     L".locked", L".locky",  L".enc",   L".encrypted", L".crypt",  L".crypto",
     L".cryptolocker",       L".cerber",              L".wnry",   L".wcry",
-    L".onion",  L".cryp1",  L".osiris", L".zepto",     L".odcodc", L".paymessage",
+    L".cryp1",  L".osiris", L".zepto",     L".odcodc", L".paymessage",
     L".kraken", L".gravity", L".tevac", L".r4a",       L".lock93", L".party",
     L".lockbit", L".blackcat", L".alphv", L".conti",  L".phobos", L".ryuk",
     L".akira",   L".play",     L".hive",  L".revil",  L".sodinokibi",
@@ -32,12 +34,22 @@ static const wchar_t* kSuspiciousExt[] = {
     L".clop",    L".stop",     L".djvu",  L".medusalocker",
 };
 
-// Форматы, где высокая энтропия это норма (сжатие/контейнер) — не подозреваем их
+// Форматы, где высокая энтропия это норма (сжатие/контейнер/медиа/БД) —
+// не подозреваем их, иначе получим массу ложных срабатываний.
 static const wchar_t* kCompressedExt[] = {
-    L".zip", L".rar", L".7z", L".gz",  L".xz",  L".bz2", L".cab",
-    L".jpg", L".jpeg", L".png", L".gif", L".webp", L".mp3", L".mp4",
-    L".avi", L".mkv", L".mov", L".exe", L".dll", L".msi", L".ico", L".pdf",
-    L".docx", L".xlsx", L".pptx", L".docm", L".xlsm", L".pptm",
+    L".zip", L".rar", L".7z",  L".gz",  L".xz",  L".bz2", L".cab",
+    L".tar", L".zst", L".lz4", L".lz",  L".br",
+    L".jpg", L".jpeg", L".png", L".gif", L".webp", L".heic", L".heif",
+    L".avif", L".bmp", L".tif", L".tiff", L".ico", L".svgz",
+    L".mp3", L".mp4",  L".avi", L".mkv", L".mov",  L".webm", L".ogg",
+    L".flac", L".aac", L".m4a", L".m4v", L".wmv",  L".wma",  L".opus",
+    L".exe", L".dll",  L".msi", L".sys", L".so",   L".dylib",
+    L".pdf", L".docx", L".xlsx", L".pptx", L".docm", L".xlsm", L".pptm",
+    L".odt", L".ods",  L".odp",
+    L".jar", L".apk",  L".ipa", L".dmg", L".iso",  L".pkg",  L".deb", L".rpm",
+    L".sqlite", L".db", L".sqlite3",
+    L".woff", L".woff2", L".ttf", L".otf", L".eot",
+    L".class", L".pyc", L".wasm",
 };
 
 static std::wstring lower(const std::wstring& s) {
@@ -70,7 +82,9 @@ static const wchar_t* kRansomNoteTokens[] = {
 static bool isRansomNoteName(const std::wstring& name) {
     const std::wstring low = lower(name);
     // записки обычно .txt/.html/.htm
-    const std::wstring ext = low.substr(low.find_last_of(L'.')); // остаётся имя-точка
+    size_t dot = low.find_last_of(L'.');
+    if (dot == std::wstring::npos) return false;
+    const std::wstring ext = low.substr(dot);
     static const wchar_t* kNoteExts[] = { L".txt", L".html", L".htm" };
     bool okExt = false;
     for (const wchar_t* e : kNoteExts) if (ext == e) { okExt = true; break; }
@@ -120,7 +134,10 @@ static std::string lowerAscii(std::string s) {
     return s;
 }
 
-// Возвращает первую сработавшую фразу (расшифрованную) или пустую строку.
+// Сканирует содержимое на фразы выкупа. Для снижения ложных срабатываний
+// требуется >= 2 разных совпадения (реальная записка почти всегда содержит
+// несколько признаков: "encrypted" + контакт/кошелёк/.onion).
+// Возвращает описание совпадений или пустую строку.
 static std::string ransomContentHit(const std::wstring& full) {
     std::error_code ec;
     if (fs::file_size(fs::path(full), ec) == 0 || ec) return "";
@@ -135,13 +152,25 @@ static std::string ransomContentHit(const std::wstring& full) {
     buf.resize((size_t)f.gcount());
 
     std::string low = lowerAscii(buf);
+    std::string first;
+    std::string second;
+    int hits = 0;
+
     const char* enc = kRansomContentEnc;
     while (*enc) {
         std::string tok = ransomToken(enc);
-        if (low.find(tok) != std::string::npos) return tok;
+        if (low.find(tok) != std::string::npos) {
+            ++hits;
+            if (first.empty()) first = tok;
+            else if (second.empty() && tok != first) second = tok;
+            // достаточно 2 разных сигналов для уверенного вердикта
+            if (hits >= 2 && !second.empty()) break;
+        }
         enc += tok.size() + 1;          // перепрыгнуть 0x00-разделитель
     }
-    return "";
+    if (hits < 2) return "";
+    if (!second.empty()) return first + ", " + second;
+    return first; // (на случай дубля — маловероятно, но hits>=2)
 }
 
 static std::wstring extOf(const std::wstring& file) {
@@ -153,6 +182,35 @@ static std::wstring extOf(const std::wstring& file) {
 static bool inList(const std::wstring& ext, const wchar_t** list, size_t n) {
     for (size_t i = 0; i < n; ++i)
         if (ext == list[i]) return true;
+    return false;
+}
+
+// Временные/служебные файлы (редакторы, браузеры, ОС) — их активность
+// не похожа на шифровальщика и даёт ложные срабатывания.
+static bool isIgnoredName(const std::wstring& name) {
+    std::wstring low = lower(name);
+    if (low == kCanaryName) return false;   // канарейку никогда не игнорируем
+
+    // Office lock/temp: "~$document.docx"
+    if (low.rfind(L"~$", 0) == 0) return true;
+
+    static const wchar_t* kExact[] = {
+        L".ds_store", L"thumbs.db", L"desktop.ini",
+        L"ntuser.dat", L"ntuser.dat.log1", L"ntuser.dat.log2",
+    };
+    for (const wchar_t* e : kExact) if (low == e) return true;
+
+    const std::wstring ext = extOf(low);
+    static const wchar_t* kExt[] = {
+        L".tmp", L".temp", L".part", L".crdownload", L".partial",
+        L".swp", L".swo", L".swx", L".bak", L".lnk",
+        L".etl",
+    };
+    for (const wchar_t* e : kExt) if (ext == e) return true;
+
+    // "~filename" временники некоторых редакторов
+    if (!low.empty() && low[0] == L'~' && low.size() > 1) return true;
+
     return false;
 }
 
@@ -364,6 +422,10 @@ void Engine::onEvent(const FileEvent& e) {
     std::error_code ec;
     if (fs::is_directory(fs::path(full), ec) || ec) return;
 
+    // Временные/служебные файлы (браузер .part/.crdownload, Office ~$*, .tmp)
+    // не анализируем — это снижает ложные срабатывания и шум в rate.
+    if (isIgnoredName(e.name)) return;
+
     {
         std::lock_guard<std::mutex> lock(m_);
         ++events_;
@@ -440,7 +502,9 @@ void Engine::onEvent(const FileEvent& e) {
                              sizeof(kCompressedExt) / sizeof(wchar_t*));
     if (!compressed &&
         (e.action == EventAction::Created || e.action == EventAction::Modified)) {
-        double threshold = (e.action == EventAction::Created) ? 7.5 : 7.8;
+        // Created: мягче (только появился). Modified: строже — меньше ложных
+        // срабатываний на обычные сохранения редакторов/приложений.
+        double threshold = (e.action == EventAction::Created) ? 7.5 : 7.85;
         double H = sampleEntropy(full);
         if (H >= threshold) {
             wchar_t buf[16];
