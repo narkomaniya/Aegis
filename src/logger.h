@@ -21,6 +21,7 @@ public:
     static Logger& instance();
 
     void enableFile(const std::wstring& path);
+    void setTheme(const std::wstring& theme); // default, white, black (mods/tweaks; in development)
     void write(Level lvl, const std::wstring& msg);
 
     // Recent alert/warn messages for UI (menu-safe viewing)
@@ -30,6 +31,7 @@ public:
 private:
     std::mutex m_;
     std::wstring filepath_;
+    std::wstring theme_ = L"default";
     std::deque<std::wstring> recent_;
 };
 

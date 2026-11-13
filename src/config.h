@@ -17,6 +17,7 @@ struct Settings {
     bool autoUpdateCheck = true; // show update notice on interactive start
     bool backupBeforeQuarantine = true; // keep backup copy before moving to quarantine
     std::wstring language = L"en"; // ui language: en, ru (reserved/partial)
+    std::wstring uiTheme = L"default"; // default, white, black (tweaks/mods; in development)
     std::vector<std::wstring> excludePaths; // exact/prefix paths to ignore
     std::vector<std::wstring> excludeExts;  // extensions like .log
     bool lastUpdateAvailable = false;

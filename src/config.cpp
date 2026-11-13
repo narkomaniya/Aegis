@@ -112,6 +112,9 @@ Settings loadSettings() {
         } else if (line.rfind("language=", 0) == 0) {
             s.language = utf8ToW(line.substr(9));
             if (s.language.empty()) s.language = L"en";
+        } else if (line.rfind("ui_theme=", 0) == 0) {
+            s.uiTheme = utf8ToW(line.substr(9));
+            if (s.uiTheme.empty()) s.uiTheme = L"default";
         } else if (line.rfind("exclude_path=", 0) == 0) {
             std::wstring w = utf8ToW(line.substr(13));
             if (!w.empty()) s.excludePaths.push_back(w);
@@ -153,6 +156,7 @@ bool saveSettings(const Settings& s) {
     f << "autoupdate=" << (s.autoUpdateCheck ? "1" : "0") << "\n";
     f << "backup_before_quarantine=" << (s.backupBeforeQuarantine ? "1" : "0") << "\n";
     f << "language=" << wToUtf8(s.language.empty()?L"en":s.language) << "\n";
+    f << "ui_theme=" << wToUtf8(s.uiTheme.empty()?L"default":s.uiTheme) << "\n";
     f << "last_update_available=" << (s.lastUpdateAvailable ? "1" : "0") << "\n";
     if (!s.lastUpdateVersion.empty())
         f << "last_update_version=" << wToUtf8(s.lastUpdateVersion) << "\n";

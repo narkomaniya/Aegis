@@ -1,0 +1,8 @@
+name=UI Theme: Black
+id=theme-white-black-black
+author=Aegis
+version=0.1.0
+type=tweak
+status=in-development
+description=Applies the black/monochrome UI theme tweak. In development.
+applies=ui_theme:black

@@ -1,5 +1,20 @@
 # Changelog
 
+## v4.2 — Mods/Tweaks foundation (in development)
+
+### Added
+- **Mods/tweaks folder:** added `mods/` in the repo and runtime mods directory support at `~/.aegis/mods`.
+- **Author tool (CLI):** `aegis mod list|path|create <name>|apply <name>` to scaffold and manage tweak manifests (in development).
+- **UI theme tweak (in development):** new `ui_theme` setting with `default`, `white`, and `black` accent themes for logger/status tags; configurable in Settings and via tweak manifests.
+- **Example tweaks:** included `mods/theme-white-black.aegismod` (white) and `mods/theme-white-black-black.aegismod` (black), marked **in development**.
+
+### Changed
+- **Settings UI/paths:** added UI theme/tweak and Mods/tweaks entries, and mods path display.
+- **Status/CLI:** `aegis status` and help now include mod/theme information.
+
+### Notes
+- The mod/tweak system is an early foundation. Manifest format and author tooling are available now; broader runtime mod loading/hooks are still **in development**.
+
 ## v4.1 — Automatic background protection (hands-off)
 
 ### Added

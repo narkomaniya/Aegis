@@ -127,14 +127,43 @@ void Logger::enableFile(const std::wstring& path) {
     filepath_ = path;
 }
 
+void Logger::setTheme(const std::wstring& theme) {
+    std::lock_guard<std::mutex> lock(m_);
+    if (theme == L"white" || theme == L"black" || theme == L"default") theme_ = theme;
+    else theme_ = L"default";
+}
+
 void Logger::write(Level lvl, const std::wstring& msg) {
+    std::wstring theme;
+    {
+        std::lock_guard<std::mutex> lock(m_);
+        theme = theme_;
+    }
     const wchar_t* color = L"";
     const wchar_t* tag   = L"";
-    switch (lvl) {
-        case Level::Ok:    color = L"\x1b[32m"; tag = L" OK   "; break;
-        case Level::Warn:  color = L"\x1b[33m"; tag = L" WARN "; break;
-        case Level::Alert: color = L"\x1b[31m"; tag = L" ALERT"; break;
-        case Level::Info:  color = L"\x1b[36m"; tag = L" INFO "; break;
+    if (theme == L"white") {
+        // White/monochrome tweak (in development): bright white accents
+        switch (lvl) {
+            case Level::Ok:    color = L"\x1b[97m"; tag = L" OK   "; break;
+            case Level::Warn:  color = L"\x1b[97m"; tag = L" WARN "; break;
+            case Level::Alert: color = L"\x1b[97m"; tag = L" ALERT"; break;
+            case Level::Info:  color = L"\x1b[97m"; tag = L" INFO "; break;
+        }
+    } else if (theme == L"black") {
+        // Dark/monochrome tweak (in development): dim/gray accents
+        switch (lvl) {
+            case Level::Ok:    color = L"\x1b[90m"; tag = L" OK   "; break;
+            case Level::Warn:  color = L"\x1b[90m"; tag = L" WARN "; break;
+            case Level::Alert: color = L"\x1b[90m"; tag = L" ALERT"; break;
+            case Level::Info:  color = L"\x1b[90m"; tag = L" INFO "; break;
+        }
+    } else {
+        switch (lvl) {
+            case Level::Ok:    color = L"\x1b[32m"; tag = L" OK   "; break;
+            case Level::Warn:  color = L"\x1b[33m"; tag = L" WARN "; break;
+            case Level::Alert: color = L"\x1b[31m"; tag = L" ALERT"; break;
+            case Level::Info:  color = L"\x1b[36m"; tag = L" INFO "; break;
+        }
     }
     std::wstring ts = timestamp();
     emit(ts + color + tag + L" \x1b[0m" + msg, true);

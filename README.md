@@ -2,7 +2,7 @@
 
 **Aegis** is a cross-platform guardian for your files. It watches your folders (Desktop, Documents, Downloads by default, or any folders you choose), detects ransomware-like behavior, and moves dangerous files into quarantine before they can be encrypted or destroyed.
 
-**Version:** v4.1 — automatic background protection (autostart runs in daemon mode, no babysitting required)  
+**Version:** v4.2 — mods/tweaks foundation and UI color theme tweaks (white/black, in development)  
 **Author:** by narkomaniya
 
 ```
@@ -67,6 +67,8 @@ Aegis combines real-time filesystem monitoring with behavior-based heuristics to
 - Configure watched folders and per-folder sensitivity
 - **Export/import settings** (copy config file)
 - **Language setting (EN/RU foundation)** for UI evolution
+- **UI theme tweaks (in development):** switch log/accent theme to `white` or `black` (or default) in Settings / via mods
+- **Mods/tweaks (in development):** `mods/` folder + runtime `~/.aegis/mods`, author tool `aegis mod create ...`, example color tweak included
 - **Auto-update check on start** (quiet menu notice) + manual `aegis update`
 - **Hands-off autostart:** `aegis autostart on|off` starts background protection automatically at login (`watch --daemon`) via HKCU Run / XDG autostart / LaunchAgent (with KeepAlive on macOS)
 - **Daemon/non-interactive watch mode:** `aegis watch --daemon` (hidden console on Windows) plus CLI `status`/`export` for automation and service-friendly use
@@ -103,6 +105,7 @@ aegis status                  # quick health/status summary
 aegis quarantine              # show quarantine contents
 aegis restore [number]        # list or restore quarantined files
 aegis export [path] [--json]  # export quarantine/report (txt or json)
+aegis mod [list|path|create|apply]  # mods/tweaks author tools (in development)
 aegis update [-y]             # self-update from GitHub Releases
 aegis autostart on|off        # enable/disable autostart
 aegis help                    # help
@@ -146,9 +149,16 @@ Detection is heuristic/behavioral. To reduce false positives:
 
 GitHub Actions builds and smoke-tests on Windows, Linux, and macOS. On version tags (`v*`), CI publishes a GitHub Release with platform binaries (`aegis.exe`, `aegis-linux`, `aegis-macos`) and `SHA256SUMS.txt`.
 
+## Mods / Tweaks (in development)
+
+- Repo `mods/` folder and runtime `~/.aegis/mods` are available for tweaks.
+- Author tool: `aegis mod list|path|create <name>|apply <name|path>`.
+- Included example: **UI color/theme tweak (white/black)** — **in development** (`mods/theme-white-black.aegismod`, `mods/theme-white-black-black.aegismod`).
+- Broader mod runtime/hooks are planned.
+
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md) for v4.0 highlights (biggest update).
+See [CHANGELOG.md](CHANGELOG.md) for release notes (including v4.2 mods/tweaks foundation).
 
 ## About
 

@@ -180,6 +180,151 @@ static std::wstring rulesPath() {
     return (fs::path(aegisDir()) / L"rules.txt").wstring();
 }
 
+static std::wstring modsDir() {
+    return (fs::path(aegisDir()) / L"mods").wstring();
+}
+
+static void applyUiTheme(const Settings& s) {
+    Logger::instance().setTheme(s.uiTheme);
+}
+
+static std::string to8(const std::wstring& w){
+    std::string s;
+#ifdef _WIN32
+    if (w.empty()) return s;
+    int n = WideCharToMultiByte(CP_UTF8,0,w.c_str(),(int)w.size(),nullptr,0,nullptr,nullptr);
+    s.resize(n); if(n>0) WideCharToMultiByte(CP_UTF8,0,w.c_str(),(int)w.size(),s.data(),n,nullptr,nullptr);
+#else
+    s.assign(w.begin(), w.end());
+#endif
+    return s;
+}
+
+// (reserved for future mod parsing helpers)
+
+struct ModInfo {
+    std::wstring file;
+    std::wstring name;
+    std::wstring id;
+    std::wstring type;
+    std::wstring status;
+    std::wstring applies;
+};
+
+static ModInfo readModInfo(const fs::path& p) {
+    ModInfo m;
+    m.file = p.filename().wstring();
+    m.name = p.stem().wstring();
+    m.status = L"unknown";
+    std::ifstream f(p, std::ios::binary);
+    if (!f) return m;
+    std::string line;
+    while (std::getline(f, line)) {
+        if (!line.empty() && line.back()=='\r') line.pop_back();
+        auto eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        std::string k = line.substr(0, eq), v = line.substr(eq+1);
+        if (k=="name") m.name = toW(v);
+        else if (k=="id") m.id = toW(v);
+        else if (k=="type") m.type = toW(v);
+        else if (k=="status") m.status = toW(v);
+        else if (k=="applies") m.applies = toW(v);
+    }
+    return m;
+}
+
+static std::vector<ModInfo> listMods() {
+    std::vector<ModInfo> out;
+    std::error_code ec;
+    fs::path md = fs::path(modsDir());
+    if (!fs::exists(md, ec)) return out;
+    for (auto& e : fs::directory_iterator(md, ec)) {
+        if (ec) break;
+        if (!e.is_regular_file(ec)) continue;
+        auto ext = lowerW(e.path().extension().wstring());
+        if (ext == L".aegismod" || ext == L".mod" || ext == L".txt") out.push_back(readModInfo(e.path()));
+    }
+    std::sort(out.begin(), out.end(), [](const ModInfo& a, const ModInfo& b){ return a.file < b.file; });
+    return out;
+}
+
+static int runModCommand(const std::vector<std::wstring>& argsIn) {
+    auto args = argsIn;
+    std::error_code ec;
+    fs::create_directories(fs::path(modsDir()), ec);
+    if (args.empty() || args[0] == L"list") {
+        console(L"Mods folder: " + modsDir());
+        auto mods = listMods();
+        if (mods.empty()) { console(L"  (no mods found)"); console(L"  Tip: create one with: aegis mod create my-tweak"); return 0; }
+        for (auto& m : mods) {
+            std::wstring line = L"  - " + m.name + L" [" + m.file + L"]";
+            if (!m.type.empty()) line += L" type=" + m.type;
+            if (!m.status.empty()) line += L" status=" + m.status;
+            console(line);
+            if (!m.applies.empty()) console(L"      applies: " + m.applies);
+        }
+        return 0;
+    }
+    if (args[0] == L"path") {
+        console(modsDir());
+        return 0;
+    }
+    if (args[0] == L"create") {
+        if (args.size() < 2) { warn(L"usage: aegis mod create <name>"); return 1; }
+        std::wstring name = trimW(args[1]);
+        for (auto& c : name) if (c==L' '||c==L'\\'||c==L'/') c = L'-';
+        if (name.empty()) { warn(L"invalid mod name"); return 1; }
+        fs::path out = fs::path(modsDir()) / (name + L".aegismod");
+        if (fs::exists(out, ec)) { warn(L"mod already exists: " + out.wstring()); return 1; }
+        std::ofstream f(out, std::ios::binary | std::ios::trunc);
+        if (!f) { warn(L"could not create mod file"); return 1; }
+        f << "name=" << to8(name) << "\n";
+        f << "id=" << to8(name) << "\n";
+        f << "author=\n";
+        f << "version=0.1.0\n";
+        f << "type=tweak\n";
+        f << "status=in-development\n";
+        f << "description=\n";
+        f << "applies=\n";
+        f << "\n# Aegis mod/tweak manifest (author tool scaffold)\n";
+        f << "# This is a starter file for tweak authors. Runtime mod loading is limited/in development.\n";
+        f << "# For UI theme tweaks, you can set: applies=ui_theme:white or ui_theme:black and run: aegis mod apply " << to8(name) << "\n";
+        ok(L"Created mod scaffold: " + out.wstring());
+        console(L"Edit the file to describe your tweak. (Mod system in development)");
+        return 0;
+    }
+    if (args[0] == L"apply") {
+        if (args.size() < 2) { warn(L"usage: aegis mod apply <name|file|path>"); return 1; }
+        std::wstring key = trimW(args[1]);
+        fs::path target;
+        for (auto& m : listMods()) {
+            if (m.file == key || m.name == key || m.id == key || fs::path(m.file).stem().wstring() == key) { target = fs::path(modsDir()) / m.file; break; }
+        }
+        if (target.empty()) {
+            fs::path p(key);
+            if (p.is_absolute() || key.find(L'\\') != std::wstring::npos || key.find(L'/') != std::wstring::npos) target = p;
+            else target = fs::path(modsDir()) / key;
+        }
+        if (!fs::exists(target, ec)) { warn(L"mod not found: " + key); return 1; }
+        ModInfo mi = readModInfo(target);
+        if (mi.applies == L"ui_theme:white" || mi.applies == L"ui_theme:black" || mi.applies == L"ui_theme:default") {
+            Settings s = loadSettings();
+            s.uiTheme = mi.applies.substr(std::wstring(L"ui_theme:").size());
+            saveSettings(s);
+            applyUiTheme(s);
+            ok(L"Applied tweak: " + mi.name + L" (ui theme = " + s.uiTheme + L")");
+            console(L"Note: tweak/mod system is in development; currently supports simple UI theme tweaks.");
+            return 0;
+        }
+        warn(L"This mod does not declare a supported applies= action yet (mod system in development).");
+        console(L"Supported now: applies=ui_theme:white | ui_theme:black | ui_theme:default");
+        return 1;
+    }
+    warn(L"unknown mod subcommand: " + args[0]);
+    console(L"usage: aegis mod [list|path|create <name>|apply <name|path>]");
+    return 1;
+}
+
 static void pushDefaultDir(std::vector<std::wstring>& dirs, int which) {
     std::wstring path;
 #ifdef _WIN32
@@ -287,6 +432,7 @@ static void printHelp() {
     console(L"  aegis quarantine                 show quarantine contents");
     console(L"  aegis restore [number]           list or restore quarantined files");
     console(L"  aegis export [path]              export quarantine/report (txt; .json for JSON)");
+    console(L"  aegis mod [list|path|create|apply]  mods/tweaks (author tool; in development)");
     console(L"  aegis update [-y]                check GitHub and update Aegis itself");
     console(L"  aegis autostart on|off           enable/disable automatic background protection at login");
     console(L"  aegis help                       this help");
@@ -477,18 +623,6 @@ static void historyMenu() {
             waitEnter();
         }
     }
-}
-
-static std::string to8(const std::wstring& w){
-    std::string s;
-#ifdef _WIN32
-    if (w.empty()) return s;
-    int n = WideCharToMultiByte(CP_UTF8,0,w.c_str(),(int)w.size(),nullptr,0,nullptr,nullptr);
-    s.resize(n); if(n>0) WideCharToMultiByte(CP_UTF8,0,w.c_str(),(int)w.size(),s.data(),n,nullptr,nullptr);
-#else
-    s.assign(w.begin(), w.end());
-#endif
-    return s;
 }
 
 // (reserved for future report escaping helpers)
@@ -753,10 +887,12 @@ static void settingsMenu(Settings& settings) {
         console(L"  5. Exclusions (whitelist): " + std::to_wstring(settings.excludePaths.size()) + L" paths, " + std::to_wstring(settings.excludeExts.size()) + L" extensions");
         console(L"  6. Auto-update check on start: " + std::wstring(settings.autoUpdateCheck ? L"ON" : L"OFF"));
         console(L"  7. Language (UI): " + settings.language + L" (en/ru foundation)");
-        console(L"  8. Profiles / presets");
-        console(L"  9. Export settings");
-        console(L"  10. Import settings");
-        console(L"  11. Show paths (config/log/quarantine/rules/backup)");
+        console(L"  8. UI theme/tweak: " + settings.uiTheme + L" (white/black in development)");
+        console(L"  9. Profiles / presets");
+        console(L"  10. Export settings");
+        console(L"  11. Import settings");
+        console(L"  12. Mods/tweaks (author tools, in development)");
+        console(L"  13. Show paths (config/log/quarantine/rules/backup/mods)");
         console(L"  0. Back");
         console(L"");
         prompt(L"  > ");
@@ -791,6 +927,18 @@ static void settingsMenu(Settings& settings) {
             if(c==L"1") { settings.language=L"en"; saveSettings(settings); ok(L"Language set to en."); waitEnter(); }
             else if(c==L"2") { settings.language=L"ru"; saveSettings(settings); ok(L"Language set to ru (foundation; full UI translation can be expanded)."); waitEnter(); }
         } else if (line == L"8") {
+            showHeader(); console(L"  [ UI THEME / TWEAK ]"); console(L"");
+            console(L"  Theme tweak for UI log/tag accents (in development):");
+            console(L"  1. Default");
+            console(L"  2. White tweak (in development)");
+            console(L"  3. Black tweak (in development)");
+            console(L"  0. Back");
+            prompt(L"  > ");
+            std::wstring c; if(!std::getline(std::wcin,c)) return; c=trimW(c);
+            if(c==L"1") { settings.uiTheme=L"default"; saveSettings(settings); applyUiTheme(settings); ok(L"UI theme: default"); waitEnter(); }
+            else if(c==L"2") { settings.uiTheme=L"white"; saveSettings(settings); applyUiTheme(settings); ok(L"UI theme tweak applied: white (in development)"); waitEnter(); }
+            else if(c==L"3") { settings.uiTheme=L"black"; saveSettings(settings); applyUiTheme(settings); ok(L"UI theme tweak applied: black (in development)"); waitEnter(); }
+        } else if (line == L"9") {
             showHeader(); console(L"  [ PROFILES ]"); console(L"");
             console(L"  1. Balanced (default)");
             console(L"  2. Strict protection");
@@ -803,7 +951,7 @@ static void settingsMenu(Settings& settings) {
             else if(c==L"2") { applyProfile(settings, L"strict"); ok(L"Applied: Strict protection"); waitEnter(); }
             else if(c==L"3") { applyProfile(settings, L"performance"); ok(L"Applied: Performance/ultra-light"); waitEnter(); }
             else if(c==L"4") { applyProfile(settings, L"documents"); ok(L"Applied: Documents (strict)"); waitEnter(); }
-        } else if (line == L"9") {
+        } else if (line == L"10") {
             showHeader(); console(L"  [ EXPORT SETTINGS ]"); console(L"");
             console(L"  Enter destination file path (or empty to cancel):"); prompt(L"  > ");
             std::wstring p; if(!std::getline(std::wcin,p)) return; p=trimW(p);
@@ -812,23 +960,34 @@ static void settingsMenu(Settings& settings) {
                 if(ec) warn(L"Export failed."); else ok(L"Settings exported to: " + p);
                 waitEnter();
             }
-        } else if (line == L"10") {
+        } else if (line == L"11") {
             showHeader(); console(L"  [ IMPORT SETTINGS ]"); console(L"");
             console(L"  Enter source file path (or empty to cancel):"); prompt(L"  > ");
             std::wstring p; if(!std::getline(std::wcin,p)) return; p=trimW(p);
             if(!p.empty()){
                 std::error_code ec; fs::create_directories(fs::path(configPath()).parent_path(), ec);
                 ec.clear(); fs::copy_file(fs::path(p), fs::path(configPath()), fs::copy_options::overwrite_existing, ec);
-                if(ec) warn(L"Import failed."); else { settings = loadSettings(); ok(L"Settings imported."); }
+                if(ec) warn(L"Import failed."); else { settings = loadSettings(); applyUiTheme(settings); ok(L"Settings imported."); }
                 waitEnter();
             }
-        } else if (line == L"11") {
+        } else if (line == L"12") {
+            showHeader(); console(L"  [ MODS / TWEAKS ] (in development)"); console(L"");
+            std::error_code ec; fs::create_directories(fs::path(modsDir()), ec);
+            console(L"  Mods folder: " + modsDir());
+            console(L"  Use CLI author tools: aegis mod list | path | create <name> | apply <name>");
+            console(L"");
+            auto mods = listMods();
+            if (mods.empty()) console(L"  No mods found. Create one: aegis mod create my-tweak");
+            else for (auto& m : mods) console(L"  - " + m.name + L" [" + m.file + L"] status=" + m.status);
+            waitEnter();
+        } else if (line == L"13") {
             showHeader(); console(L"  [ PATHS ]"); console(L"");
             console(L"  Config:     " + configPath());
             console(L"  Rules:      " + rulesPath());
             console(L"  Log:        " + logPath());
             console(L"  Quarantine: " + quarantineRoot());
             console(L"  Backups:    " + backupRoot());
+            console(L"  Mods:       " + modsDir());
             waitEnter();
         }
     }
@@ -853,6 +1012,7 @@ static void helpScreen() {
 
 static int runWatch(const Settings& inSettings, bool fromMenu, std::vector<std::wstring> overrideDirs = {}, bool daemonMode = false) {
     Settings settings = inSettings;
+    applyUiTheme(settings);
     loadUserRules(settings); // merge extra exclusions from ~/.aegis/rules.txt
 
     auto wfs = effectiveWatchFolders(settings);
@@ -1023,6 +1183,7 @@ static void watchMenu(Settings& settings) {
 
 static int interactiveMenu() {
     Settings settings = loadSettings();
+    applyUiTheme(settings);
     if (settings.autoUpdateCheck) {
         std::wstring latest = checkLatestVersion();
         if (!latest.empty()) {
@@ -1088,6 +1249,7 @@ int main(int argc, char** argv) {
     if (args[0] == L"status") {
         banner();
         Settings s = loadSettings();
+        applyUiTheme(s);
         Quarantine q(quarantineRoot());
         console(L"Version: " + std::wstring(ae::kVersion));
         console(L"Config:  " + configPath());
@@ -1095,12 +1257,15 @@ int main(int argc, char** argv) {
         console(L"Quarantine: " + quarantineRoot() + L" (" + std::to_wstring(q.count()) + L" items)");
         console(L"Watched folders: " + std::to_wstring(effectiveWatchPaths(s).size()));
         console(L"Sensitivity: " + sensitivityName(s.sensitivity) + (s.ultraLight?L" (ultra-light)":L""));
+        console(L"UI theme: " + s.uiTheme + L" (mods/tweaks in development)");
+        console(L"Mods folder: " + modsDir());
         console(L"Exclusions: " + std::to_wstring(s.excludePaths.size()) + L" paths, " + std::to_wstring(s.excludeExts.size()) + L" exts");
         return 0;
     }
     if (args[0] == L"watch") {
         args.erase(args.begin());
         Settings s = loadSettings();
+        applyUiTheme(s);
         bool daemon = false;
         std::vector<std::wstring> dirs;
         for (auto& a : args) {
@@ -1131,6 +1296,11 @@ int main(int argc, char** argv) {
         int rc = exportReportTo(path, json);
         if (rc == 0) ok(L"Report exported: " + path); else warn(L"Export failed.");
         return rc;
+    }
+    if (args[0] == L"mod" || args[0] == L"mods") {
+        Settings s = loadSettings(); applyUiTheme(s);
+        banner(); args.erase(args.begin());
+        return runModCommand(args);
     }
     if (args[0] == L"update") {
         banner(); args.erase(args.begin());
