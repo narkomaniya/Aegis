@@ -1,6 +1,6 @@
 # Changelog
 
-## v5.0 — Mod Platform, Automatic Mod Verification, and Quality Update
+## v5.0 — Biggest update in the project's history (Mod Platform, Automatic Mod Verification, Quality Update)
 
 ### Added
 - **Mods/Tweaks Manager UI:** new interactive interface in the main menu and settings (`Mods / Tweaks Manager`) to browse installed mods, view details, enable/disable, apply, verify, publish, and open the mods folder.

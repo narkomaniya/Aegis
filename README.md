@@ -2,7 +2,7 @@
 
 **Aegis** is a cross-platform guardian for your files. It watches your folders (Desktop, Documents, Downloads by default, or any folders you choose), detects ransomware-like behavior, and moves dangerous files into quarantine before they can be encrypted or destroyed.
 
-**Version:** v5.0 — Mod Platform (UI + author tools), automatic mod verification on publish/CI, and quality updates  
+**Version:** v5.0 — the biggest update in the project's history (Mod Platform UI + author tools, automatic mod verification on publish/CI, and quality updates)  
 **Author:** by narkomaniya
 
 ```
