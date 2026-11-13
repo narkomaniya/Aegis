@@ -2,7 +2,7 @@
 
 **Aegis** is a cross-platform guardian for your files. It watches your folders (Desktop, Documents, Downloads by default, or any folders you choose), detects ransomware-like behavior, and moves dangerous files into quarantine before they can be encrypted or destroyed.
 
-**Version:** v3.2 (ready for everyday use)  
+**Version:** v4.0 — the biggest Aegis update so far (major stability, detection, UX, and performance overhaul)  
 **Author:** by narkomaniya
 
 ```
@@ -62,12 +62,14 @@ Aegis combines real-time filesystem monitoring with behavior-based heuristics to
 - Open quarantine/log locations from menus
 
 ### Settings & convenience
-- Persistent settings in `~/.aegis/config.txt`
+- Persistent settings in `~/.aegis/config.txt` (with backward-compatible loading)
 - **Profiles/presets:** Balanced, Strict protection, Performance/ultra-light, Documents
 - Configure watched folders and per-folder sensitivity
 - **Export/import settings** (copy config file)
+- **Language setting (EN/RU foundation)** for UI evolution
 - **Auto-update check on start** (quiet menu notice) + manual `aegis update`
 - **Autostart:** `aegis autostart on|off` (HKCU Run / XDG autostart / LaunchAgent)
+- **Daemon/non-interactive watch mode** and CLI `status`/`export` for automation and service-friendly use
 
 ### Low footprint
 - Small sampling windows (8 KiB entropy, 16 KiB content), bounded bookkeeping, periodic working-set trimming (Windows), ultra-light mode option
@@ -96,9 +98,11 @@ g++ -std=c++17 -O2 -Wall src\*.cpp -o build\aegis.exe -lshell32 -lole32 -luuid
 ```text
 aegis                         # interactive menu (recommended)
 aegis watch [dir1 dir2 ...]   # watch folders (saved/custom or specified)
+aegis watch --daemon [...]    # non-interactive watch mode (service-friendly)
+aegis status                  # quick health/status summary
 aegis quarantine              # show quarantine contents
-aegis restore                 # list quarantine records
-aegis restore <number>        # restore a quarantined file
+aegis restore [number]        # list or restore quarantined files
+aegis export [path] [--json]  # export quarantine/report (txt or json)
 aegis update [-y]             # self-update from GitHub Releases
 aegis autostart on|off        # enable/disable autostart
 aegis help                    # help
@@ -140,7 +144,11 @@ Detection is heuristic/behavioral. To reduce false positives:
 
 ## CI & releases
 
-GitHub Actions builds and smoke-tests on Windows, Linux, and macOS. On version tags (`v*`), CI can publish a release with platform binaries and `SHA256SUMS.txt`.
+GitHub Actions builds and smoke-tests on Windows, Linux, and macOS. On version tags (`v*`), CI publishes a GitHub Release with platform binaries (`aegis.exe`, `aegis-linux`, `aegis-macos`) and `SHA256SUMS.txt`.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for v4.0 highlights (biggest update).
 
 ## About
 

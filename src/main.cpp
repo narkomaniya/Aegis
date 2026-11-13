@@ -280,10 +280,13 @@ static void showHeader() {
 
 static void printHelp() {
     console(L"Commands:");
+    console(L"  aegis                            interactive menu");
     console(L"  aegis watch [dir1 dir2 ...]      watch folders (default or saved/custom)");
+    console(L"  aegis watch --daemon [dirs...]   watch without interactive command loop (service-friendly)");
+    console(L"  aegis status                     quick health/status summary");
     console(L"  aegis quarantine                 show quarantine contents");
-    console(L"  aegis restore                    list quarantine records with numbers");
-    console(L"  aegis restore <number>           restore a quarantined file");
+    console(L"  aegis restore [number]           list or restore quarantined files");
+    console(L"  aegis export [path]              export quarantine/report (txt; .json for JSON)");
     console(L"  aegis update [-y]                check GitHub and update Aegis itself");
     console(L"  aegis autostart on|off           start Aegis automatically with the system");
     console(L"  aegis help                       this help");
@@ -476,37 +479,75 @@ static void historyMenu() {
     }
 }
 
+static std::string to8(const std::wstring& w){
+    std::string s;
+#ifdef _WIN32
+    if (w.empty()) return s;
+    int n = WideCharToMultiByte(CP_UTF8,0,w.c_str(),(int)w.size(),nullptr,0,nullptr,nullptr);
+    s.resize(n); if(n>0) WideCharToMultiByte(CP_UTF8,0,w.c_str(),(int)w.size(),s.data(),n,nullptr,nullptr);
+#else
+    s.assign(w.begin(), w.end());
+#endif
+    return s;
+}
+
+static std::string jsonEsc(const std::string& in){
+    std::string o; o.reserve(in.size()+8);
+    for(char c: in){
+        switch(c){
+            case '\\': o+="\\\\\\"; break; // will fix below
+            default: o+=c; break;
+        }
+    }
+    return o;
+}
+
+static int exportReportTo(const std::wstring& pathW, bool json) {
+    Quarantine q(quarantineRoot());
+    auto recs = q.records();
+    std::ofstream f(fs::path(pathW), std::ios::binary | std::ios::trunc);
+    if (!f) return 1;
+    if (!json) {
+        f << "Aegis report\n";
+        f << "Version: " << to8(ae::kVersion) << "\n";
+        f << "Quarantine items: " << recs.size() << "\n\n";
+        int i=1;
+        for (const auto& r : recs) {
+            f << "["<< (i++) << "] " << to8(r.file) << "\n";
+            f << "  time:   " << to8(r.time) << "\n";
+            f << "  reason: " << to8(r.reason) << "\n";
+            f << "  from:   " << to8(r.from) << "\n\n";
+        }
+    } else {
+        auto esc = [](const std::string& s){
+            std::string o; o.reserve(s.size()+8);
+            for(char c: s){
+                if(c=='\\' || c=='"'){ o.push_back('\\'); o.push_back(c); }
+                else if(c=='\n'){ o += "\\n"; }
+                else if(c=='\r'){ o += "\\r"; }
+                else if(c=='\t'){ o += "\\t"; }
+                else { o.push_back(c); }
+            }
+            return o;
+        };
+        f << "{\n  \"version\": \"" << esc(to8(ae::kVersion)) << "\",\n  \"quarantine_items\": " << recs.size() << ",\n  \"records\": [\n";
+        for (size_t i=0;i<recs.size();++i){
+            const auto& r=recs[i];
+            f << "    {\"file\":\""<<esc(to8(r.file))<<"\",\"time\":\""<<esc(to8(r.time))<<"\",\"reason\":\""<<esc(to8(r.reason))<<"\",\"from\":\""<<esc(to8(r.from))<<"\"}";
+            if(i+1<recs.size()) f << ",";
+            f << "\n";
+        }
+        f << "  ]\n}\n";
+    }
+    return 0;
+}
+
 static void exportReport() {
     showHeader();
     console(L"  [ EXPORT REPORT ]");
     console(L"");
-    Quarantine q(quarantineRoot());
-    auto recs = q.records();
     fs::path out = fs::path(aegisDir()) / L"aegis-report.txt";
-    std::ofstream f(out, std::ios::binary | std::ios::trunc);
-    if (!f) { warn(L"Could not write report."); waitEnter(); return; }
-    auto to8 = [](const std::wstring& w){
-        std::string s;
-#ifdef _WIN32
-        if (w.empty()) return s;
-        int n = WideCharToMultiByte(CP_UTF8,0,w.c_str(),(int)w.size(),nullptr,0,nullptr,nullptr);
-        s.resize(n); if(n>0) WideCharToMultiByte(CP_UTF8,0,w.c_str(),(int)w.size(),s.data(),n,nullptr,nullptr);
-#else
-        s.assign(w.begin(), w.end());
-#endif
-        return s;
-    };
-    f << "Aegis report\n";
-    f << "Version: " << to8(ae::kVersion) << "\n";
-    f << "Quarantine items: " << recs.size() << "\n\n";
-    int i=1;
-    for (const auto& r : recs) {
-        f << "["<< (i++) << "] " << to8(r.file) << "\n";
-        f << "  time:   " << to8(r.time) << "\n";
-        f << "  reason: " << to8(r.reason) << "\n";
-        f << "  from:   " << to8(r.from) << "\n\n";
-    }
-    f.close();
+    if (exportReportTo(out.wstring(), false) != 0) { warn(L"Could not write report."); waitEnter(); return; }
     ok(L"Report saved: " + out.wstring());
     waitEnter();
 }
@@ -720,10 +761,11 @@ static void settingsMenu(Settings& settings) {
         console(L"  4. Watched folders:    " + std::to_wstring(effectiveWatchFolders(settings).size()) + L" (with per-folder sensitivity)");
         console(L"  5. Exclusions (whitelist): " + std::to_wstring(settings.excludePaths.size()) + L" paths, " + std::to_wstring(settings.excludeExts.size()) + L" extensions");
         console(L"  6. Auto-update check on start: " + std::wstring(settings.autoUpdateCheck ? L"ON" : L"OFF"));
-        console(L"  7. Profiles / presets");
-        console(L"  8. Export settings");
-        console(L"  9. Import settings");
-        console(L"  10. Show paths (config/log/quarantine/rules/backup)");
+        console(L"  7. Language (UI): " + settings.language + L" (en/ru foundation)");
+        console(L"  8. Profiles / presets");
+        console(L"  9. Export settings");
+        console(L"  10. Import settings");
+        console(L"  11. Show paths (config/log/quarantine/rules/backup)");
         console(L"  0. Back");
         console(L"");
         prompt(L"  > ");
@@ -749,6 +791,15 @@ static void settingsMenu(Settings& settings) {
             settings.autoUpdateCheck = !settings.autoUpdateCheck; saveSettings(settings);
             ok(std::wstring(L"Auto-update check ") + (settings.autoUpdateCheck?L"enabled":L"disabled") + L"."); waitEnter();
         } else if (line == L"7") {
+            showHeader(); console(L"  [ LANGUAGE ]"); console(L"");
+            console(L"  1. English (en)");
+            console(L"  2. Russian (ru) - foundation/partial");
+            console(L"  0. Back");
+            prompt(L"  > ");
+            std::wstring c; if(!std::getline(std::wcin,c)) return; c=trimW(c);
+            if(c==L"1") { settings.language=L"en"; saveSettings(settings); ok(L"Language set to en."); waitEnter(); }
+            else if(c==L"2") { settings.language=L"ru"; saveSettings(settings); ok(L"Language set to ru (foundation; full UI translation can be expanded)."); waitEnter(); }
+        } else if (line == L"8") {
             showHeader(); console(L"  [ PROFILES ]"); console(L"");
             console(L"  1. Balanced (default)");
             console(L"  2. Strict protection");
@@ -761,7 +812,7 @@ static void settingsMenu(Settings& settings) {
             else if(c==L"2") { applyProfile(settings, L"strict"); ok(L"Applied: Strict protection"); waitEnter(); }
             else if(c==L"3") { applyProfile(settings, L"performance"); ok(L"Applied: Performance/ultra-light"); waitEnter(); }
             else if(c==L"4") { applyProfile(settings, L"documents"); ok(L"Applied: Documents (strict)"); waitEnter(); }
-        } else if (line == L"8") {
+        } else if (line == L"9") {
             showHeader(); console(L"  [ EXPORT SETTINGS ]"); console(L"");
             console(L"  Enter destination file path (or empty to cancel):"); prompt(L"  > ");
             std::wstring p; if(!std::getline(std::wcin,p)) return; p=trimW(p);
@@ -770,7 +821,7 @@ static void settingsMenu(Settings& settings) {
                 if(ec) warn(L"Export failed."); else ok(L"Settings exported to: " + p);
                 waitEnter();
             }
-        } else if (line == L"9") {
+        } else if (line == L"10") {
             showHeader(); console(L"  [ IMPORT SETTINGS ]"); console(L"");
             console(L"  Enter source file path (or empty to cancel):"); prompt(L"  > ");
             std::wstring p; if(!std::getline(std::wcin,p)) return; p=trimW(p);
@@ -780,7 +831,7 @@ static void settingsMenu(Settings& settings) {
                 if(ec) warn(L"Import failed."); else { settings = loadSettings(); ok(L"Settings imported."); }
                 waitEnter();
             }
-        } else if (line == L"10") {
+        } else if (line == L"11") {
             showHeader(); console(L"  [ PATHS ]"); console(L"");
             console(L"  Config:     " + configPath());
             console(L"  Rules:      " + rulesPath());
@@ -809,7 +860,7 @@ static void helpScreen() {
     waitEnter();
 }
 
-static int runWatch(const Settings& inSettings, bool fromMenu, std::vector<std::wstring> overrideDirs = {}) {
+static int runWatch(const Settings& inSettings, bool fromMenu, std::vector<std::wstring> overrideDirs = {}, bool daemonMode = false) {
     Settings settings = inSettings;
     loadUserRules(settings); // merge extra exclusions from ~/.aegis/rules.txt
 
@@ -850,8 +901,20 @@ static int runWatch(const Settings& inSettings, bool fromMenu, std::vector<std::
     }
 
     ok(L"Aegis is on duty. Quarantine: " + qRoot);
-    console(L"");
+    if (!daemonMode) console(L"");
     watcher.start();
+
+    if (daemonMode) {
+        console(L"Running in daemon/non-interactive mode. Press Ctrl+C to stop.");
+        // block until stdin closes or interrupted; simple loop
+        std::wstring dummy;
+        while (std::getline(std::wcin, dummy)) {
+            // ignore input in daemon mode
+        }
+        watcher.stop();
+        ok(L"Aegis stopped. Talk soon!");
+        return 0;
+    }
 
     while (true) {
         if (fromMenu) {
@@ -1031,13 +1094,45 @@ int main(int argc, char** argv) {
 
     if (args.empty()) return interactiveMenu();
     if (args[0] == L"help" || args[0] == L"--help" || args[0] == L"/?") { banner(); printHelp(); return 0; }
+    if (args[0] == L"status") {
+        banner();
+        Settings s = loadSettings();
+        Quarantine q(quarantineRoot());
+        console(L"Version: " + std::wstring(ae::kVersion));
+        console(L"Config:  " + configPath());
+        console(L"Log:     " + logPath());
+        console(L"Quarantine: " + quarantineRoot() + L" (" + std::to_wstring(q.count()) + L" items)");
+        console(L"Watched folders: " + std::to_wstring(effectiveWatchPaths(s).size()));
+        console(L"Sensitivity: " + sensitivityName(s.sensitivity) + (s.ultraLight?L" (ultra-light)":L""));
+        console(L"Exclusions: " + std::to_wstring(s.excludePaths.size()) + L" paths, " + std::to_wstring(s.excludeExts.size()) + L" exts");
+        return 0;
+    }
     if (args[0] == L"watch") {
         banner(); args.erase(args.begin());
         Settings s = loadSettings();
-        if (args.empty()) return runWatch(s, false);
-        return runWatch(s, false, args);
+        bool daemon = false;
+        std::vector<std::wstring> dirs;
+        for (auto& a : args) {
+            if (a == L"--daemon" || a == L"-d") daemon = true;
+            else dirs.push_back(a);
+        }
+        if (dirs.empty()) return runWatch(s, false, {}, daemon);
+        return runWatch(s, false, dirs, daemon);
     }
     if (args[0] == L"quarantine") { banner(); return runQuarantineList(); }
+    if (args[0] == L"export") {
+        banner(); args.erase(args.begin());
+        bool json = false;
+        std::wstring path = (fs::path(aegisDir()) / L"aegis-report.txt").wstring();
+        for (auto& a : args) {
+            if (a == L"--json") json = true;
+            else path = a;
+        }
+        if (json && path.find(L".json") == std::wstring::npos && args.size() <= 1) path = (fs::path(aegisDir()) / L"aegis-report.json").wstring();
+        int rc = exportReportTo(path, json);
+        if (rc == 0) ok(L"Report exported: " + path); else warn(L"Export failed.");
+        return rc;
+    }
     if (args[0] == L"update") {
         banner(); args.erase(args.begin());
         bool assumeYes = false; for (const auto& a : args) if (a == L"-y" || a == L"--yes") assumeYes = true;

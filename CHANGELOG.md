@@ -1,0 +1,31 @@
+# Changelog
+
+## v4.0 — Biggest update (major stability, detection, UX and performance overhaul)
+
+### Added
+- **Risk/correlation engine improvements:** stronger multi-signal escalation (canary, rename bursts, entropy, ransom notes/content, suspicious/double extensions) with faster emergency response on attack patterns.
+- **Integrity checks:** canary integrity verification and diagnostics improvements; setup checks for paths, permissions, backups, and rules.
+- **Backup & recovery workflow:** optional backup-before-quarantine and quick rollback helpers for recent quarantine activity (mass-attack recovery aid).
+- **Profiles/presets:** Balanced, Strict, Performance/Ultra-light, Documents.
+- **Per-folder sensitivity** and global sensitivity tuning.
+- **Exclusions/whitelist:** paths and extensions in settings plus optional `~/.aegis/rules.txt` user rules.
+- **Ultra-light mode v2:** reduced heavy checks/IO for low-resource systems while keeping key protections active.
+- **Interactive menu upgrades:** watch screen with live counters and recent alerts panel/buffer, quarantine management (restore/delete/clear/restore recent/open), history search/filter, diagnostics, report export.
+- **Settings management:** export/import settings, auto-update check notices, autostart controls.
+- **Localization foundation:** language setting and EN/RU-ready UI structure (expanded in follow-ups).
+- **CLI & automation:** `status`, `watch --daemon`, and `export` (txt/json) commands for scripting/service-friendly use.
+- **CI/CD release pipeline:** multi-platform build/smoke tests and tag-based GitHub Releases with binaries and SHA256 checksums.
+
+### Changed
+- **Large refactor of UI flow:** clearer zapret-style menus, better status/alerts visibility, improved quarantine/history workflows.
+- **Config system expanded:** richer settings format with backward-compatible loading for older configs.
+- **Quarantine/reporting:** improved record handling, search, and export.
+
+### Fixed
+- **Stability and correctness:** safer path/config handling, improved console output synchronization, better handling of edge cases in watch/quarantine/restore flows.
+- **False positives/performance balance:** additional ignores, tunable thresholds, reduced unnecessary scans/IO in relevant modes.
+
+### Security
+- **Hardening measures:** canary tamper response, safer quarantine operations (with backups), integrity/setup diagnostics, and more conservative handling in ultra-light mode.
+
+> v4.0 is the biggest Aegis update so far, focused on making protection stronger, lighter, and much easier to control.
