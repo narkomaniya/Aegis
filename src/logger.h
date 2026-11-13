@@ -2,6 +2,8 @@
 // logger.h — простой логгер Aegis: цветной вывод в консоль + файл
 #include <string>
 #include <mutex>
+#include <deque>
+#include <vector>
 
 namespace ae {
 
@@ -21,9 +23,14 @@ public:
     void enableFile(const std::wstring& path);
     void write(Level lvl, const std::wstring& msg);
 
+    // Recent alert/warn messages for UI (menu-safe viewing)
+    std::vector<std::wstring> recentAlerts(size_t maxN = 20);
+    void clearRecentAlerts();
+
 private:
     std::mutex m_;
     std::wstring filepath_;
+    std::deque<std::wstring> recent_;
 };
 
 inline void info(const std::wstring& m)  { Logger::instance().write(Level::Info,  m); }

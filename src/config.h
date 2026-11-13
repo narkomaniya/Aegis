@@ -1,12 +1,24 @@
 ﻿#pragma once
 #include <string>
 #include <vector>
+#include <utility>
 
 namespace ae {
 
+struct WatchFolder {
+    std::wstring path;
+    int sensitivity = -1; // -1 = use global
+};
+
 struct Settings {
-    std::vector<std::wstring> watchDirs; // empty = defaults
-    int sensitivity = 1; // 0=low, 1=medium, 2=high
+    std::vector<WatchFolder> watchFolders; // empty = defaults
+    int sensitivity = 1; // 0=low, 1=medium, 2=high (global)
+    bool ultraLight = false; // reduce checks/frequency for very low resource usage
+    bool autoUpdateCheck = true; // show update notice on interactive start
+    std::vector<std::wstring> excludePaths; // exact/prefix paths to ignore
+    std::vector<std::wstring> excludeExts;  // extensions like .log
+    bool lastUpdateAvailable = false;
+    std::wstring lastUpdateVersion;
 };
 
 std::wstring configPath();

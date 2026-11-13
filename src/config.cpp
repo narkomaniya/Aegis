@@ -83,6 +83,13 @@ static std::wstring utf8ToW(const std::string& s) {
 #endif
 }
 
+static int parseSens(const std::string& v) {
+    if (v == "low" || v == "0") return 0;
+    if (v == "high" || v == "2") return 2;
+    if (v == "medium" || v == "1") return 1;
+    return -1;
+}
+
 Settings loadSettings() {
     Settings s;
     std::ifstream f(fs::path(configPath()), std::ios::binary);
@@ -91,13 +98,40 @@ Settings loadSettings() {
     while (std::getline(f, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
         if (line.rfind("sensitivity=", 0) == 0) {
-            std::string v = line.substr(12);
-            if (v == "low") s.sensitivity = 0;
-            else if (v == "high") s.sensitivity = 2;
-            else s.sensitivity = 1;
+            int v = parseSens(line.substr(12));
+            if (v >= 0) s.sensitivity = v;
+        } else if (line.rfind("ultralight=", 0) == 0) {
+            std::string v = line.substr(11);
+            s.ultraLight = (v == "1" || v == "true" || v == "on");
+        } else if (line.rfind("autoupdate=", 0) == 0) {
+            std::string v = line.substr(11);
+            s.autoUpdateCheck = !(v == "0" || v == "false" || v == "off");
+        } else if (line.rfind("exclude_path=", 0) == 0) {
+            std::wstring w = utf8ToW(line.substr(13));
+            if (!w.empty()) s.excludePaths.push_back(w);
+        } else if (line.rfind("exclude_ext=", 0) == 0) {
+            std::wstring w = utf8ToW(line.substr(12));
+            if (!w.empty()) s.excludeExts.push_back(w);
+        } else if (line.rfind("last_update_available=", 0) == 0) {
+            std::string v = line.substr(22);
+            s.lastUpdateAvailable = (v == "1" || v == "true");
+        } else if (line.rfind("last_update_version=", 0) == 0) {
+            s.lastUpdateVersion = utf8ToW(line.substr(20));
         } else if (line.rfind("watch=", 0) == 0) {
-            std::wstring w = utf8ToW(line.substr(6));
-            if (!w.empty()) s.watchDirs.push_back(w);
+            // new format: watch=<sens or ->|<path>  old: watch=<path>
+            std::string rest = line.substr(6);
+            size_t bar = rest.find('|');
+            if (bar != std::string::npos) {
+                std::string sv = rest.substr(0, bar);
+                std::wstring path = utf8ToW(rest.substr(bar + 1));
+                if (!path.empty()) {
+                    WatchFolder wf; wf.path = path; wf.sensitivity = parseSens(sv);
+                    s.watchFolders.push_back(wf);
+                }
+            } else {
+                std::wstring w = utf8ToW(rest);
+                if (!w.empty()) { WatchFolder wf; wf.path = w; wf.sensitivity = -1; s.watchFolders.push_back(wf); }
+            }
         }
     }
     return s;
@@ -109,9 +143,17 @@ bool saveSettings(const Settings& s) {
     std::ofstream f(fs::path(configPath()), std::ios::binary | std::ios::trunc);
     if (!f) return false;
     f << "sensitivity=" << wToUtf8(sensitivityName(s.sensitivity)) << "\n";
-    for (const auto& d : s.watchDirs) {
-        f << "watch=" << wToUtf8(d) << "\n";
+    f << "ultralight=" << (s.ultraLight ? "1" : "0") << "\n";
+    f << "autoupdate=" << (s.autoUpdateCheck ? "1" : "0") << "\n";
+    f << "last_update_available=" << (s.lastUpdateAvailable ? "1" : "0") << "\n";
+    if (!s.lastUpdateVersion.empty())
+        f << "last_update_version=" << wToUtf8(s.lastUpdateVersion) << "\n";
+    for (const auto& wf : s.watchFolders) {
+        std::string sv = (wf.sensitivity < 0) ? "-" : wToUtf8(sensitivityName(wf.sensitivity));
+        f << "watch=" << sv << "|" << wToUtf8(wf.path) << "\n";
     }
+    for (const auto& p : s.excludePaths) f << "exclude_path=" << wToUtf8(p) << "\n";
+    for (const auto& e : s.excludeExts) f << "exclude_ext=" << wToUtf8(e) << "\n";
     return true;
 }
 

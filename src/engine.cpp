@@ -206,6 +206,12 @@ static bool inList(const std::wstring& ext, const wchar_t** list, size_t n) {
     return false;
 }
 
+static std::wstring normPath(const std::wstring& p) {
+    std::wstring s = p;
+    std::replace(s.begin(), s.end(), L'\\', L'/');
+    return lower(s);
+}
+
 // Временные/служебные файлы (редакторы, браузеры, ОС) — их активность
 // не похожа на шифровальщика и даёт ложные срабатывания.
 static bool isIgnoredName(const std::wstring& name) {
@@ -388,6 +394,74 @@ void Engine::ignorePath(const std::wstring& full) {
     ignored_.insert(lower(full));
 }
 
+void Engine::setExclusions(std::vector<std::wstring> paths, std::vector<std::wstring> exts) {
+    std::lock_guard<std::mutex> lock(m_);
+    excludePaths_.clear();
+    for (auto& p : paths) { if (!p.empty()) excludePaths_.push_back(normPath(p)); }
+    excludeExts_.clear();
+    for (auto& e : exts) {
+        if (e.empty()) continue;
+        std::wstring le = lower(e);
+        if (!le.empty() && le[0] != L'.') le = L"." + le;
+        excludeExts_.push_back(le);
+    }
+}
+
+void Engine::setFolderSensitivities(std::vector<std::pair<std::wstring,int>> map) {
+    std::lock_guard<std::mutex> lock(m_);
+    folderSensitivity_.clear();
+    for (auto& kv : map) {
+        if (!kv.first.empty()) folderSensitivity_.push_back({normPath(kv.first), kv.second});
+    }
+}
+
+bool Engine::isExcluded(const std::wstring& full, const std::wstring& name) const {
+    std::wstring nf = normPath(full);
+    std::wstring ne = extOf(name);
+    for (const auto& p : excludePaths_) {
+        if (!p.empty() && nf.rfind(p, 0) == 0) return true; // prefix match
+    }
+    for (const auto& e : excludeExts_) {
+        if (!e.empty() && ne == e) return true;
+    }
+    return false;
+}
+
+int Engine::sensitivityFor(const std::wstring& full) const {
+    std::wstring nf = normPath(full);
+    int best = sensitivity_;
+    size_t bestLen = 0;
+    for (const auto& kv : folderSensitivity_) {
+        if (kv.second < 0) continue;
+        const auto& p = kv.first;
+        if (!p.empty() && nf.rfind(p, 0) == 0 && p.size() >= bestLen) {
+            bestLen = p.size();
+            best = kv.second;
+        }
+    }
+    return best;
+}
+
+IntegrityResult Engine::checkIntegrity() const {
+    IntegrityResult r;
+    std::error_code ec;
+    for (const auto& root : protectedRoots_) {
+        fs::path canary = fs::path(root) / fs::path(kCanaryName);
+        if (!fs::exists(canary, ec) || ec) { r.missing.push_back(canary.wstring()); ec.clear(); continue; }
+        // verify size/content marker quickly
+        auto sz = fs::file_size(canary, ec);
+        if (ec || sz < 10) { r.changed.push_back(canary.wstring()); ec.clear(); continue; }
+        std::ifstream f(canary, std::ios::binary);
+        std::string head(32, '\0');
+        f.read(&head[0], 32);
+        head.resize((size_t)f.gcount());
+        if (head.find("Aegis canary") == std::string::npos) r.changed.push_back(canary.wstring());
+        else r.ok.push_back(canary.wstring());
+        ec.clear();
+    }
+    return r;
+}
+
 // Расставить canary-ловушки по наблюдаемым папкам (вызывается ДО запуска
 // слежения, чтобы не поймать собственное создание ловушки).
 void Engine::seedCanaries() {
@@ -469,13 +543,24 @@ void Engine::onEvent(const FileEvent& e) {
     // не анализируем — это снижает ложные срабатывания и шум в rate.
     if (isIgnoredName(e.name)) return;
 
+    // User exclusions (whitelist): paths/extensions
+    if (isExcluded(full, e.name)) return;
+
+    // per-folder sensitivity (effective for this event)
+    int effSens = sensitivityFor(full);
+    bool ultra = ultraLight_;
+
     {
         std::lock_guard<std::mutex> lock(m_);
         ++events_;
-        if (events_ % 1024 == 0) trimWorkingSet();   // маленький RSS на годы работы
+        // ultra-light: trim a bit more aggressively to keep RSS tiny
+        if (events_ % (ultra ? 256ULL : 1024ULL) == 0) trimWorkingSet();
+        int prev = sensitivity_;
+        sensitivity_ = effSens; // use for rate/rename thresholds in this tick
         noteRate(e.action == EventAction::Renamed);
         checkRate();
         checkRenames();
+        sensitivity_ = prev;
     }
 
     const std::wstring ext     = extOf(e.name);
@@ -494,7 +579,7 @@ void Engine::onEvent(const FileEvent& e) {
                                   std::chrono::seconds(30);
             }
             ++alerts_;
-            noteHitLocked(hits_, alerts_, emergency_, emergencyUntil_, sensitivity_);
+            noteHitLocked(hits_, alerts_, emergency_, emergencyUntil_, effSens);
         }
         ae::alert(L"TAMPER ALERT: canary touched: " + full +
                   L" — something is messing with this folder!");
@@ -505,7 +590,7 @@ void Engine::onEvent(const FileEvent& e) {
     // 0c) Записка выкупа: типовое имя "how to decrypt ..." и т.п.
     if (isRansomNoteName(e.name)) {
         take(e, full, L"ransom note detected: " + e.name, false);
-        { std::lock_guard<std::mutex> lock(m_); noteHitLocked(hits_, alerts_, emergency_, emergencyUntil_, sensitivity_); }
+        { std::lock_guard<std::mutex> lock(m_); noteHitLocked(hits_, alerts_, emergency_, emergencyUntil_, effSens); }
         return;
     }
 
@@ -516,16 +601,23 @@ void Engine::onEvent(const FileEvent& e) {
         static const wchar_t* kNoteExtsSc[] =
             { L".txt", L".html", L".htm", L".md", L".ini", L".log" };
         if (inList(ext, kNoteExtsSc, sizeof(kNoteExtsSc) / sizeof(wchar_t*))) {
-            // skip very large text files (ransom notes are small) to save IO/CPU
-            std::error_code ecSz;
-            auto sz = fs::file_size(fs::path(full), ecSz);
-            if (!ecSz && sz <= 2 * 1024 * 1024) {
-                const std::string hit = ransomContentHit(full);
-                if (!hit.empty()) {
-                    std::wstring hitw(hit.begin(), hit.end());
-                    take(e, full, L"ransom note content: \"" + hitw + L"\"", false);
-                    { std::lock_guard<std::mutex> lock(m_); noteHitLocked(hits_, alerts_, emergency_, emergencyUntil_, sensitivity_); }
-                    return;
+            // ultra-light: scan fewer text types and smaller files to save CPU/IO
+            bool scan = true;
+            if (ultra) {
+                scan = (ext == L".txt" || ext == L".html" || ext == L".htm");
+            }
+            if (scan) {
+                std::error_code ecSz;
+                auto sz = fs::file_size(fs::path(full), ecSz);
+                uintmax_t limitSz = ultra ? 512 * 1024 : 2 * 1024 * 1024;
+                if (!ecSz && sz <= limitSz) {
+                    const std::string hit = ransomContentHit(full);
+                    if (!hit.empty()) {
+                        std::wstring hitw(hit.begin(), hit.end());
+                        take(e, full, L"ransom note content: \"" + hitw + L"\"", false);
+                        { std::lock_guard<std::mutex> lock(m_); int prev=sensitivity_; sensitivity_=effSens; noteHitLocked(hits_, alerts_, emergency_, emergencyUntil_, effSens); sensitivity_=prev; }
+                        return;
+                    }
                 }
             }
         }
@@ -537,7 +629,7 @@ void Engine::onEvent(const FileEvent& e) {
         !oldExt.empty() && susExt) {
         take(e, full, L"dangerous rename: " + oldExt + L" -> " + ext +
                  (hasDoubleExtRansom(e.name, ext) ? L" (double extension)" : L""), false);
-        { std::lock_guard<std::mutex> lock(m_); noteHitLocked(hits_, alerts_, emergency_, emergencyUntil_, sensitivity_); }
+        { std::lock_guard<std::mutex> lock(m_); noteHitLocked(hits_, alerts_, emergency_, emergencyUntil_, effSens); }
         return;
     }
 
@@ -545,7 +637,7 @@ void Engine::onEvent(const FileEvent& e) {
     if (susExt) {
         take(e, full, L"dangerous extension " + ext +
                  (hasDoubleExtRansom(e.name, ext) ? L" (double extension)" : L""), false);
-        { std::lock_guard<std::mutex> lock(m_); noteHitLocked(hits_, alerts_, emergency_, emergencyUntil_, sensitivity_); }
+        { std::lock_guard<std::mutex> lock(m_); noteHitLocked(hits_, alerts_, emergency_, emergencyUntil_, effSens); }
         return;
     }
 
@@ -557,22 +649,24 @@ void Engine::onEvent(const FileEvent& e) {
                              sizeof(kCompressedExt) / sizeof(wchar_t*));
     if (!compressed &&
         (e.action == EventAction::Created || e.action == EventAction::Modified)) {
-        // Thresholds depend on sensitivity (low = fewer FPs, high = more aggressive)
-        double tCreated = 7.5, tModified = 7.85;
-        {
-            std::lock_guard<std::mutex> lock(m_);
-            if (sensitivity_ <= 0) { tCreated = 7.7; tModified = 7.92; }
-            else if (sensitivity_ >= 2) { tCreated = 7.3; tModified = 7.7; }
-        }
-        double threshold = (e.action == EventAction::Created) ? tCreated : tModified;
-        double H = sampleEntropy(full);
-        if (H >= threshold) {
-            wchar_t buf[16];
-            swprintf(buf, 16, L"%.2f", H);
-            take(e, full, L"high entropy (" + std::wstring(buf) +
-                 L"/8.0) — looks like encryption", false);
-            { std::lock_guard<std::mutex> lock(m_); noteHitLocked(hits_, alerts_, emergency_, emergencyUntil_, sensitivity_); }
-            return;
+        // ultra-light: skip expensive entropy check on Modified to reduce CPU/IO
+        if (!(ultra && e.action == EventAction::Modified)) {
+            // Thresholds depend on effective sensitivity (low = fewer FPs, high = more aggressive)
+            double tCreated = 7.5, tModified = 7.85;
+            if (effSens <= 0) { tCreated = 7.7; tModified = 7.92; }
+            else if (effSens >= 2) { tCreated = 7.3; tModified = 7.7; }
+            // ultra-light: slightly stricter on Created to keep protection with fewer checks
+            if (ultra) tCreated += 0.05;
+            double threshold = (e.action == EventAction::Created) ? tCreated : tModified;
+            double H = sampleEntropy(full);
+            if (H >= threshold) {
+                wchar_t buf[16];
+                swprintf(buf, 16, L"%.2f", H);
+                take(e, full, L"high entropy (" + std::wstring(buf) +
+                     L"/8.0) — looks like encryption", false);
+                { std::lock_guard<std::mutex> lock(m_); int prev=sensitivity_; sensitivity_=effSens; noteHitLocked(hits_, alerts_, emergency_, emergencyUntil_, effSens); sensitivity_=prev; }
+                return;
+            }
         }
     }
 

@@ -161,15 +161,33 @@ void Logger::write(Level lvl, const std::wstring& msg) {
         case Level::Alert: color = L"\x1b[31m"; tag = L" ALERT"; break;
         case Level::Info:  color = L"\x1b[36m"; tag = L" INFO "; break;
     }
-    emit(timestamp() + color + tag + L" \x1b[0m" + msg, true);
+    std::wstring ts = timestamp();
+    emit(ts + color + tag + L" \x1b[0m" + msg, true);
 
+    std::lock_guard<std::mutex> lock(m_);
+    if (lvl == Level::Warn || lvl == Level::Alert) {
+        recent_.push_back(ts + L" [" + tag + L"] " + msg);
+        while (recent_.size() > 50) recent_.pop_front();
+    }
     if (!filepath_.empty()) {
-        std::lock_guard<std::mutex> lock(m_);
         std::ofstream f(std::filesystem::path(filepath_), std::ios::app);
         if (f)
-            f << toUtf8(timestamp()) << " [" << toUtf8(tag) << "] "
+            f << toUtf8(ts) << " [" << toUtf8(tag) << "] "
               << toUtf8(msg) << "\n";
     }
+}
+
+std::vector<std::wstring> Logger::recentAlerts(size_t maxN) {
+    std::lock_guard<std::mutex> lock(m_);
+    std::vector<std::wstring> out;
+    size_t start = recent_.size() > maxN ? recent_.size() - maxN : 0;
+    for (size_t i = start; i < recent_.size(); ++i) out.push_back(recent_[i]);
+    return out;
+}
+
+void Logger::clearRecentAlerts() {
+    std::lock_guard<std::mutex> lock(m_);
+    recent_.clear();
 }
 
 } // namespace ae

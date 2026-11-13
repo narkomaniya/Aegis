@@ -179,6 +179,29 @@ void cleanupOldBinary() {
     if (fs::exists(old, ec)) { ec.clear(); fs::remove(old, ec); }
 }
 
+std::wstring checkLatestVersion() {
+    std::wstring tmp = tempDir();
+#ifdef _WIN32
+    std::wstring jsonPath = tmp + L"\\aegis-release-check.json";
+#else
+    std::wstring jsonPath = tmp + L"/aegis-release-check.json";
+#endif
+    if (!httpGetToFile(kApiUrl, jsonPath)) return L"";
+    std::wstring tag;
+    {
+        std::ifstream f(fs::path(jsonPath), std::ios::binary);
+        if (f) {
+            std::ostringstream ss; ss << f.rdbuf();
+            tag = parseTag(ss.str());
+        }
+    }
+    if (tag.empty()) return L"";
+    std::vector<long> remote = parseVersion(tag);
+    std::vector<long> local  = parseVersion(kVersion);
+    if (cmpVersion(remote, local) > 0) return tag;
+    return L"";
+}
+
 int runUpdate(bool assumeYes) {
     console(L"checking the latest GitHub release...");
 

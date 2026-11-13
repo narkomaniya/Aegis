@@ -8,6 +8,9 @@ namespace ae {
 // Формат ответа: 0 = актуально, 1 = успешно обновились, 2 = не удалось
 int runUpdate(bool assumeYes);
 
+// Returns newer version tag (e.g. v3.2) if available, else empty. Best-effort, no prompt/install.
+std::wstring checkLatestVersion();
+
 // удалить остаток *.old от прошлого самообновления (best effort)
 void cleanupOldBinary();
 
