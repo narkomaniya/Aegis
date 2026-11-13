@@ -15,6 +15,8 @@ struct Settings {
     int sensitivity = 1; // 0=low, 1=medium, 2=high (global)
     bool ultraLight = false; // reduce checks/frequency for very low resource usage
     bool autoUpdateCheck = true; // show update notice on interactive start
+    bool backupBeforeQuarantine = true; // keep backup copy before moving to quarantine
+    std::wstring language = L"en"; // ui language: en, ru (reserved/partial)
     std::vector<std::wstring> excludePaths; // exact/prefix paths to ignore
     std::vector<std::wstring> excludeExts;  // extensions like .log
     bool lastUpdateAvailable = false;

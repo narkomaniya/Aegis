@@ -2,7 +2,7 @@
 
 **Aegis** is a cross-platform guardian for your files. It watches your folders (Desktop, Documents, Downloads by default, or any folders you choose), detects ransomware-like behavior, and moves dangerous files into quarantine before they can be encrypted or destroyed.
 
-**Version:** v3.1 (ready for everyday use)  
+**Version:** v3.2 (ready for everyday use)  
 **Author:** by narkomaniya
 
 ```
@@ -26,60 +26,51 @@
 
 ## What Aegis does
 
-Aegis combines real-time filesystem monitoring with behavior-based heuristics (not just signatures) to catch ransomware-like activity early, quarantine threats safely, and let you restore files if needed.
+Aegis combines real-time filesystem monitoring with behavior-based heuristics to catch ransomware-like activity early, quarantine threats safely, and let you review/restore files.
 
 ## Features
 
-### Cross-platform monitoring
+### Monitoring
 - Native watchers: Windows (`ReadDirectoryChangesW`), Linux (`inotify`), macOS (`FSEvents`)
-- One background watcher thread per platform implementation
-- Watches default user folders (Desktop, Documents, Downloads) with proper OS-aware resolution (including OneDrive/known folders/XDG), or custom folders
+- Default protected folders (Desktop, Documents, Downloads) with OS-aware resolution (Known Folders/XDG, OneDrive-aware), plus custom folders
+- Interactive zapret-style menu UI (numbered menus, submenus, clear screens)
 
 ### Detection & protection
-- **Dangerous extensions** (common ransomware families/markers), including double-extension patterns like `document.docx.locked`
-- **High-entropy content** in new/modified files (sampled from first 8 KiB; compressed/media/container formats excluded to reduce false positives)
-- **Mass file-change rate** detection → emergency mode (new files copied to quarantine for a window)
-- **Mass rename bursts** detection (typical encryption behavior)
-- **Canary honey-files** (`.aegis-canary.txt`) planted in watched folders; any tamper triggers alert and canaries are auto-replanted if removed
-- **Ransom-note detection** by filename patterns and by content phrases (minimal YARA-style scan of first 16 KiB in small text files)
-- **Detection escalation:** multiple strong detections in a short time trigger faster emergency response
-- **Process attribution** (best effort): records which process holds/touched a quarantined file (Windows Restart Manager, `/proc/<pid>/fd` on Linux)
-- **Exclusions / whitelist:** exclude trusted paths (prefix) and extensions to reduce false positives
-- **Per-folder sensitivity:** assign sensitivity per watched folder (or use global)
-- **Sensitivity profiles:** `low` (fewer false positives), `medium` (balanced), `high` (stricter/faster)
-- **Ultra-light mode:** reduces heavy checks/IO for very low CPU and memory usage on weaker systems
+- **Dangerous extensions** (common ransomware families/markers) and **double-extension** detection (e.g. `file.docx.locked`)
+- **High-entropy** detection for new/modified files (sampled from first 8 KiB; compressed/media/container formats excluded)
+- **Mass activity detection:** file-change rate spikes and rename bursts → emergency mode
+- **Canary honey-files** in watched folders (tamper alert, auto-replant on delete)
+- **Ransom-note detection:** filename patterns and content phrase scan (minimal YARA-style, first 16 KiB of small text files)
+- **Hit escalation:** multiple strong detections in a short window escalate protection faster
+- **Process attribution** (best effort): records who touched/quarantined files (Windows Restart Manager, `/proc/<pid>/fd` on Linux)
+- **Exclusions / whitelist:** exclude trusted paths (prefix) and extensions
+- **Per-folder sensitivity** and global sensitivity profiles: `low`, `medium`, `high`
+- **Ultra-light mode:** reduces heavy checks/IO for very low CPU and memory usage
+- **User rules file:** optional `~/.aegis/rules.txt` to add extra `exclude_path=` / `exclude_ext=` entries
 
-### Quarantine, history & recovery
-- Threats are moved (or copied in emergency mode) into `~/.aegis/quarantine`
-- Each quarantined item includes `meta.txt` (origin path, time, reason, mode, attribution when available)
-- Nothing is silently destroyed: files can be reviewed and restored
-- Interactive quarantine management: restore by number, **restore all**, delete record, clear all, open quarantine folder
-- History/stats view with search/filter and report export
+### Quarantine, backup & recovery
+- Threats moved (or copied in emergency mode) to `~/.aegis/quarantine` with `meta.txt` (origin, time, reason, mode, attribution)
+- **Backup before quarantine:** optional extra backup copy in `~/.aegis/backups` before moving suspicious files
+- No silent permanent deletion: review and restore files
+- Quarantine actions: restore by number, **restore all**, **restore recent** (last 30 min / mass-attack rollback helper), delete record, clear all, open folder
+- History/stats with search/filter and **export report** (`~/.aegis/aegis-report.txt`)
 
-### UI & usability
-- Interactive zapret-style menu UI: numbered choices, clear screens, submenus, easy navigation
-- Live watch screen with counters (events/alerts/quarantined/emergency) and recent alerts preview
-- Recent alerts buffer view in menu (helps track alerts without losing context)
-- Diagnostics / setup check (folders, quarantine/log paths, canary presence)
+### UI & diagnostics
+- Live watch screen: events/alerts/quarantined/emergency counters + recent alerts preview
+- **Recent alerts buffer** view/clear (stable place to review alerts)
+- **Diagnostics / check setup:** folders, quarantine/config/log paths, canary presence, write test, rules/backups status
 - Open quarantine/log locations from menus
-- Centered terminal output and large banner
 
-### Updates, autostart & persistence
-- **Self-update:** `aegis update` checks GitHub Releases and replaces the binary in-place (with rollback; cleans `*.old` on startup)
-- **Auto-update check notice:** optional check on interactive start with a quiet menu notification when a newer release is available
-- **Autostart:** `aegis autostart on|off` (HKCU Run on Windows, XDG autostart on Linux, LaunchAgent on macOS; no admin rights required)
-- **Persistent settings:** watched folders, per-folder sensitivity, global sensitivity, exclusions, ultra-light mode, auto-update preference saved in `~/.aegis/config.txt`
+### Settings & convenience
+- Persistent settings in `~/.aegis/config.txt`
+- **Profiles/presets:** Balanced, Strict protection, Performance/ultra-light, Documents
+- Configure watched folders and per-folder sensitivity
+- **Export/import settings** (copy config file)
+- **Auto-update check on start** (quiet menu notice) + manual `aegis update`
+- **Autostart:** `aegis autostart on|off` (HKCU Run / XDG autostart / LaunchAgent)
 
-### Logging & footprint
-- Activity log: `~/.aegis/aegis.log`
-- Low footprint design: small sampling windows (entropy/content), bounded bookkeeping, periodic working-set trimming on Windows, optional ultra-light mode
-
-## How it works
-
-1. **Watcher** receives OS filesystem events (create/modify/delete/rename).
-2. **Engine** evaluates events with heuristics: suspicious extensions/renames, high entropy, ransom-note names/content, canary tampering, rename/rate bursts, and rapid sequences of strong detections.
-3. **Quarantine** safely takes custody of suspicious files with metadata for review/restore.
-4. **UI/CLI** provides monitoring, status, quarantine management, settings, diagnostics, and updates.
+### Low footprint
+- Small sampling windows (8 KiB entropy, 16 KiB content), bounded bookkeeping, periodic working-set trimming (Windows), ultra-light mode option
 
 ## Build
 
@@ -98,13 +89,13 @@ g++ -std=c++17 -O2 -Wall src\*.cpp -o build\aegis.exe -lshell32 -lole32 -luuid
 ```bash
 ./build.sh
 ```
-(or build with CMake)
+(CI builds produce `aegis-linux`, `aegis-macos`, `aegis.exe` artifacts.)
 
 ## Run
 
 ```text
 aegis                         # interactive menu (recommended)
-aegis watch [dir1 dir2 ...]   # watch folders (saved/custom or defaults)
+aegis watch [dir1 dir2 ...]   # watch folders (saved/custom or specified)
 aegis quarantine              # show quarantine contents
 aegis restore                 # list quarantine records
 aegis restore <number>        # restore a quarantined file
@@ -113,38 +104,43 @@ aegis autostart on|off        # enable/disable autostart
 aegis help                    # help
 ```
 
-### Interactive menu highlights
-- **Watch / protect folders:** start protection, configure watched folders, per-folder sensitivity
-- **Quarantine:** view, restore, restore all, delete, clear, open folder
-- **History / stats / search:** browse and filter records, open locations
-- **Settings:** global sensitivity, ultra-light mode, exclusions (paths/extensions), auto-update check, paths
-- **Diagnostics:** setup checks and canary status
-- **Recent alerts buffer / Export report / Update / Autostart / Help**
+### Interactive menu
+- **Watch / protect folders:** start protection, configure folders, per-folder sensitivity
+- **Quarantine:** view/restore/restore recent/delete/clear/open
+- **History / stats / search:** browse, filter, open locations
+- **Settings:** sensitivity, ultra-light, backups, folders, exclusions, auto-update, profiles, export/import, paths
+- **Diagnostics / Recent alerts / Export report / Update / Autostart / Help**
 
 While watching (CLI mode): `status`, `quarantine`, `restore [n]`, `help`, `q`.
 
 ## Paths
 
 - Config: `~/.aegis/config.txt`
+- User rules (optional): `~/.aegis/rules.txt`
 - Log: `~/.aegis/aegis.log`
 - Quarantine: `~/.aegis/quarantine/`
+- Backups: `~/.aegis/backups/`
 - Report export: `~/.aegis/aegis-report.txt`
 
-(`~` = user profile/home directory)
+## User rules file (`rules.txt`)
 
-## Notes on false positives
+Optional simple lines (merged with settings exclusions at watch start):
+```text
+exclude_path=C:\path\to\ignore
+exclude_ext=.log
+```
 
-Ransomware detection is heuristic/behavioral. If you see false positives:
-- lower sensitivity globally or for a specific folder
-- enable ultra-light mode on low-power systems/workloads as needed
-- add exclusions for trusted paths or extensions
-- review quarantine records and restore safe files
+## False positives
 
-Aegis quarantines files (custody), it does not permanently delete them.
+Detection is heuristic/behavioral. To reduce false positives:
+- lower sensitivity globally or per folder
+- enable ultra-light mode where appropriate
+- add exclusions (paths/extensions) or `rules.txt` entries
+- review quarantine and restore safe files (backups may also exist if enabled)
 
-## Download
+## CI & releases
 
-Prebuilt binaries are available on the [Releases](https://github.com/narkomaniya/Aegis/releases) page.
+GitHub Actions builds and smoke-tests on Windows, Linux, and macOS. On version tags (`v*`), CI can publish a release with platform binaries and `SHA256SUMS.txt`.
 
 ## About
 

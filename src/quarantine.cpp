@@ -56,10 +56,22 @@ static std::wstring stamp() {    auto now = std::chrono::system_clock::now();
     return buf;
 }
 
-bool Quarantine::moveIn(const std::wstring& full, const std::wstring& reason, bool copyOnly) {
+bool Quarantine::moveIn(const std::wstring& full, const std::wstring& reason, bool copyOnly, const std::wstring& backupRoot) {
     std::error_code ec;
     fs::path src(full);
     if (!fs::exists(src, ec) || ec) return false;
+
+    // Optional backup copy before taking the file (best effort, does not block quarantine)
+    if (!backupRoot.empty() && !copyOnly) {
+        std::error_code bec;
+        fs::path bdir = fs::path(backupRoot) / (stamp() + L"_backup");
+        for (int i = 1; fs::exists(bdir, bec) && i < 1000; ++i) { bec.clear(); bdir = fs::path(backupRoot) / (stamp() + L"_backup_" + std::to_wstring(i)); }
+        bec.clear();
+        fs::create_directories(bdir, bec);
+        if (!bec) {
+            fs::copy_file(src, bdir / src.filename(), fs::copy_options::overwrite_existing, bec);
+        }
+    }
 
     // Карантинная запись: папка вида <root>\20261107_142233_<имя>
     // Имена могут совпасть (два файла в одну секунду) — добавляем _1, _2, ...

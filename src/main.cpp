@@ -172,6 +172,14 @@ static std::wstring logPath() {
     return (fs::path(aegisDir()) / L"aegis.log").wstring();
 }
 
+static std::wstring backupRoot() {
+    return (fs::path(aegisDir()) / L"backups").wstring();
+}
+
+static std::wstring rulesPath() {
+    return (fs::path(aegisDir()) / L"rules.txt").wstring();
+}
+
 static void pushDefaultDir(std::vector<std::wstring>& dirs, int which) {
     std::wstring path;
 #ifdef _WIN32
@@ -229,6 +237,42 @@ static std::vector<std::wstring> effectiveWatchPaths(const Settings& s) {
     return out;
 }
 
+static void loadUserRules(Settings& s) {
+    // Simple user rules file: exclude_path=..., exclude_ext=...
+    std::error_code ec;
+    fs::path rp = fs::path(rulesPath());
+    if (!fs::exists(rp, ec)) return;
+    std::ifstream f(rp, std::ios::binary);
+    if (!f) return;
+    std::string line;
+    while (std::getline(f, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.rfind("exclude_path=", 0) == 0) {
+            std::wstring w = toW(line.substr(13));
+            if (!w.empty()) s.excludePaths.push_back(w);
+        } else if (line.rfind("exclude_ext=", 0) == 0) {
+            std::wstring w = toW(line.substr(12));
+            if (!w.empty()) {
+                if (w[0] != L'.') w = L"." + w;
+                s.excludeExts.push_back(w);
+            }
+        }
+    }
+}
+
+static void applyProfile(Settings& s, const std::wstring& name) {
+    if (name == L"performance") {
+        s.sensitivity = 0; s.ultraLight = true;
+    } else if (name == L"balanced") {
+        s.sensitivity = 1; s.ultraLight = false;
+    } else if (name == L"strict") {
+        s.sensitivity = 2; s.ultraLight = false;
+    } else if (name == L"documents") {
+        s.sensitivity = 2; s.ultraLight = false;
+    }
+    saveSettings(s);
+}
+
 static void showHeader() {
     clearScreen();
     banner();
@@ -261,6 +305,31 @@ static bool openPath(const std::wstring& path) {
     std::string cmd = "xdg-open \"" + std::string(path.begin(), path.end()) + "\"";
     return std::system(cmd.c_str()) == 0;
 #endif
+}
+
+static bool isRecentRecord(const Quarantine::Record& r, int minutes) {
+    // try parse taken-at stamp like YYYYMMDD_HHMMSS
+    std::wstring t = r.time;
+    if (t.size() < 15) {
+        // fallback: folder name prefix
+        fs::path p(r.folder);
+        t = p.filename().wstring();
+    }
+    if (t.size() < 15) return false;
+    auto digit = [](wchar_t c){return c>=L'0'&&c<=L'9';};
+    if(!(digit(t[0])&&digit(t[1])&&digit(t[2])&&digit(t[3])&&digit(t[4])&&digit(t[5])&&digit(t[6])&&digit(t[7])&&t[8]==L'_'&&digit(t[9])&&digit(t[10])&&digit(t[11])&&digit(t[12])&&digit(t[13])&&digit(t[14]))) return false;
+    std::tm tm{};
+    tm.tm_year = (t[0]-L'0')*1000 + (t[1]-L'0')*100 + (t[2]-L'0')*10 + (t[3]-L'0') - 1900;
+    tm.tm_mon  = (t[4]-L'0')*10 + (t[5]-L'0') - 1;
+    tm.tm_mday = (t[6]-L'0')*10 + (t[7]-L'0');
+    tm.tm_hour = (t[9]-L'0')*10 + (t[10]-L'0');
+    tm.tm_min  = (t[11]-L'0')*10 + (t[12]-L'0');
+    tm.tm_sec  = (t[13]-L'0')*10 + (t[14]-L'0');
+    std::time_t then = std::mktime(&tm);
+    if (then == (std::time_t)-1) return false;
+    std::time_t now = std::time(nullptr);
+    double diff = std::difftime(now, then);
+    return diff >= 0 && diff <= minutes * 60;
 }
 
 static void printRecordList(const Quarantine& q) {
@@ -305,7 +374,7 @@ static void quarantineMenu(Quarantine& q, Engine* engine) {
             }
         }
         console(L"");
-        console(L"  Enter number to restore, d<number> to delete, a restore-all, c clear-all");
+        console(L"  Enter number to restore, d<number> to delete, a restore-all, r restore recent (30m), c clear-all");
         console(L"  o open quarantine folder, 0 back");
         prompt(L"  > ");
         std::wstring line; if (!std::getline(std::wcin, line)) return;
@@ -317,6 +386,17 @@ static void quarantineMenu(Quarantine& q, Engine* engine) {
             int restored = 0;
             for (auto& r : all) { if (engine) engine->ignorePath(r.from); if (q.restore(r)) restored++; }
             ok(L"Restored " + std::to_wstring(restored) + L" file(s).");
+            waitEnter(); continue;
+        }
+        if (line == L"r" || line == L"R") {
+            auto all = q.records();
+            int restored = 0;
+            for (auto& r : all) {
+                if (!isRecentRecord(r, 30)) continue;
+                if (engine) engine->ignorePath(r.from);
+                if (q.restore(r)) restored++;
+            }
+            ok(L"Restored " + std::to_wstring(restored) + L" recent file(s) (last 30 min).");
             waitEnter(); continue;
         }
         if (line == L"c" || line == L"C") {
@@ -446,18 +526,31 @@ static void diagnosticsMenu(const Settings& settings) {
     fs::create_directories(fs::path(quarantineRoot()), ec);
     if (!ec) { console(L"  [OK]   Quarantine writable: " + quarantineRoot()); okCount++; }
     else { console(L"  [WARN] Quarantine issue: " + quarantineRoot()); warnCount++; }
+    fs::create_directories(fs::path(backupRoot()), ec);
+    console(L"  [INFO] Backups dir: " + backupRoot() + (settings.backupBeforeQuarantine ? L" (enabled)" : L" (disabled)"));
     fs::path lp = fs::path(logPath()).parent_path();
     fs::create_directories(lp, ec);
     if (fs::exists(lp)) { console(L"  [OK]   Config/log dir: " + lp.wstring()); okCount++; }
     else { console(L"  [WARN] Config/log dir issue: " + lp.wstring()); warnCount++; }
+    if (fs::exists(fs::path(configPath()), ec)) { console(L"  [OK]   Config file: " + configPath()); okCount++; }
+    else { console(L"  [INFO] Config file will be created on save: " + configPath()); }
+    if (fs::exists(fs::path(rulesPath()), ec)) { console(L"  [OK]   User rules file: " + rulesPath()); okCount++; }
+    else { console(L"  [INFO] No user rules file (optional): " + rulesPath()); }
     for (const auto& d : dirs) {
         fs::path c = fs::path(d) / L".aegis-canary.txt";
         if (fs::exists(c, ec)) { console(L"  [OK]   Canary present: " + c.wstring()); okCount++; }
         else { console(L"  [INFO] Canary not yet planted: " + c.wstring()); }
     }
+    // basic write test in quarantine
+    {
+        fs::path test = fs::path(quarantineRoot()) / L".aegis_write_test";
+        std::ofstream tf(test, std::ios::binary | std::ios::trunc);
+        if (tf) { tf << "ok"; tf.close(); fs::remove(test, ec); console(L"  [OK]   Quarantine write test passed"); okCount++; }
+        else { console(L"  [WARN] Quarantine write test failed"); warnCount++; }
+    }
     console(L"");
     console(L"  Summary: " + std::to_wstring(okCount) + L" OK, " + std::to_wstring(warnCount) + L" warning(s).");
-    console(L"  Tip: canaries are planted when protection starts.");
+    console(L"  Tip: canaries are planted when protection starts. Ultra-light mode reduces CPU/IO.");
     waitEnter();
 }
 
@@ -623,10 +716,14 @@ static void settingsMenu(Settings& settings) {
         console(L"");
         console(L"  1. Global sensitivity: " + sensitivityName(settings.sensitivity));
         console(L"  2. Ultra-light mode:   " + std::wstring(settings.ultraLight ? L"ON" : L"OFF") + L" (lower CPU/IO)");
-        console(L"  3. Watched folders:    " + std::to_wstring(effectiveWatchFolders(settings).size()) + L" (with per-folder sensitivity)");
-        console(L"  4. Exclusions (whitelist): " + std::to_wstring(settings.excludePaths.size()) + L" paths, " + std::to_wstring(settings.excludeExts.size()) + L" extensions");
-        console(L"  5. Auto-update check on start: " + std::wstring(settings.autoUpdateCheck ? L"ON" : L"OFF"));
-        console(L"  6. Show paths (config/log/quarantine)");
+        console(L"  3. Backup before quarantine: " + std::wstring(settings.backupBeforeQuarantine ? L"ON" : L"OFF"));
+        console(L"  4. Watched folders:    " + std::to_wstring(effectiveWatchFolders(settings).size()) + L" (with per-folder sensitivity)");
+        console(L"  5. Exclusions (whitelist): " + std::to_wstring(settings.excludePaths.size()) + L" paths, " + std::to_wstring(settings.excludeExts.size()) + L" extensions");
+        console(L"  6. Auto-update check on start: " + std::wstring(settings.autoUpdateCheck ? L"ON" : L"OFF"));
+        console(L"  7. Profiles / presets");
+        console(L"  8. Export settings");
+        console(L"  9. Import settings");
+        console(L"  10. Show paths (config/log/quarantine/rules/backup)");
         console(L"  0. Back");
         console(L"");
         prompt(L"  > ");
@@ -642,17 +739,54 @@ static void settingsMenu(Settings& settings) {
             settings.ultraLight = !settings.ultraLight; saveSettings(settings);
             ok(std::wstring(L"Ultra-light mode ") + (settings.ultraLight?L"enabled":L"disabled") + L"."); waitEnter();
         } else if (line == L"3") {
-            foldersMenu(settings);
+            settings.backupBeforeQuarantine = !settings.backupBeforeQuarantine; saveSettings(settings);
+            ok(std::wstring(L"Backup before quarantine ") + (settings.backupBeforeQuarantine?L"enabled":L"disabled") + L"."); waitEnter();
         } else if (line == L"4") {
-            exclusionsMenu(settings);
+            foldersMenu(settings);
         } else if (line == L"5") {
+            exclusionsMenu(settings);
+        } else if (line == L"6") {
             settings.autoUpdateCheck = !settings.autoUpdateCheck; saveSettings(settings);
             ok(std::wstring(L"Auto-update check ") + (settings.autoUpdateCheck?L"enabled":L"disabled") + L"."); waitEnter();
-        } else if (line == L"6") {
+        } else if (line == L"7") {
+            showHeader(); console(L"  [ PROFILES ]"); console(L"");
+            console(L"  1. Balanced (default)");
+            console(L"  2. Strict protection");
+            console(L"  3. Performance / ultra-light");
+            console(L"  4. Documents (strict)");
+            console(L"  0. Back");
+            prompt(L"  > ");
+            std::wstring c; if(!std::getline(std::wcin,c)) return; c=trimW(c);
+            if(c==L"1") { applyProfile(settings, L"balanced"); ok(L"Applied: Balanced"); waitEnter(); }
+            else if(c==L"2") { applyProfile(settings, L"strict"); ok(L"Applied: Strict protection"); waitEnter(); }
+            else if(c==L"3") { applyProfile(settings, L"performance"); ok(L"Applied: Performance/ultra-light"); waitEnter(); }
+            else if(c==L"4") { applyProfile(settings, L"documents"); ok(L"Applied: Documents (strict)"); waitEnter(); }
+        } else if (line == L"8") {
+            showHeader(); console(L"  [ EXPORT SETTINGS ]"); console(L"");
+            console(L"  Enter destination file path (or empty to cancel):"); prompt(L"  > ");
+            std::wstring p; if(!std::getline(std::wcin,p)) return; p=trimW(p);
+            if(!p.empty()){
+                std::error_code ec; fs::copy_file(fs::path(configPath()), fs::path(p), fs::copy_options::overwrite_existing, ec);
+                if(ec) warn(L"Export failed."); else ok(L"Settings exported to: " + p);
+                waitEnter();
+            }
+        } else if (line == L"9") {
+            showHeader(); console(L"  [ IMPORT SETTINGS ]"); console(L"");
+            console(L"  Enter source file path (or empty to cancel):"); prompt(L"  > ");
+            std::wstring p; if(!std::getline(std::wcin,p)) return; p=trimW(p);
+            if(!p.empty()){
+                std::error_code ec; fs::create_directories(fs::path(configPath()).parent_path(), ec);
+                ec.clear(); fs::copy_file(fs::path(p), fs::path(configPath()), fs::copy_options::overwrite_existing, ec);
+                if(ec) warn(L"Import failed."); else { settings = loadSettings(); ok(L"Settings imported."); }
+                waitEnter();
+            }
+        } else if (line == L"10") {
             showHeader(); console(L"  [ PATHS ]"); console(L"");
             console(L"  Config:     " + configPath());
+            console(L"  Rules:      " + rulesPath());
             console(L"  Log:        " + logPath());
             console(L"  Quarantine: " + quarantineRoot());
+            console(L"  Backups:    " + backupRoot());
             waitEnter();
         }
     }
@@ -675,7 +809,10 @@ static void helpScreen() {
     waitEnter();
 }
 
-static int runWatch(const Settings& settings, bool fromMenu, std::vector<std::wstring> overrideDirs = {}) {
+static int runWatch(const Settings& inSettings, bool fromMenu, std::vector<std::wstring> overrideDirs = {}) {
+    Settings settings = inSettings;
+    loadUserRules(settings); // merge extra exclusions from ~/.aegis/rules.txt
+
     auto wfs = effectiveWatchFolders(settings);
     std::vector<std::wstring> dirs = overrideDirs.empty() ? effectiveWatchPaths(settings) : overrideDirs;
     if (dirs.empty()) dirs = effectiveWatchPaths(settings);
@@ -683,6 +820,7 @@ static int runWatch(const Settings& settings, bool fromMenu, std::vector<std::ws
     const std::wstring qRoot = quarantineRoot();
     std::error_code ec;
     fs::create_directories(fs::path(qRoot).parent_path(), ec);
+    if (settings.backupBeforeQuarantine) fs::create_directories(fs::path(backupRoot()), ec);
 
     Logger::instance().enableFile(logPath());
 
@@ -691,6 +829,7 @@ static int runWatch(const Settings& settings, bool fromMenu, std::vector<std::ws
     engine.setSensitivity(settings.sensitivity);
     engine.setUltraLight(settings.ultraLight);
     engine.setExclusions(settings.excludePaths, settings.excludeExts);
+    if (settings.backupBeforeQuarantine) engine.setBackupRoot(backupRoot());
     std::vector<std::pair<std::wstring,int>> fsens;
     if (overrideDirs.empty()) {
         for (auto& wf : wfs) fsens.push_back({wf.path, wf.sensitivity});

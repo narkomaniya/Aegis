@@ -374,7 +374,7 @@ void Engine::take(const FileEvent& e, const std::wstring& full,
     std::wstring reasonFull = reason;
     if (!who.empty()) reasonFull += L"  | touched by " + who;
 
-    bool done = q_.moveIn(full, reasonFull, copyOnly);
+    bool done = q_.moveIn(full, reasonFull, copyOnly, backupRoot_);
     if (done) {
         ++quarantined_;
         if (copyOnly) {

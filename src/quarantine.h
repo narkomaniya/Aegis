@@ -15,7 +15,8 @@ public:
 
     // copyOnly = true  -> файл КОПИРУЕТСЯ в карантин (аварийный режим, файл остаётся)
     // copyOnly = false -> файл ПЕРЕМЕЩАЕТСЯ в карантин (с диска исчезает)
-    bool moveIn(const std::wstring& full, const std::wstring& reason, bool copyOnly = false);
+    // backupRoot: if not empty, keep an extra backup copy before move (best effort)
+    bool moveIn(const std::wstring& full, const std::wstring& reason, bool copyOnly = false, const std::wstring& backupRoot = L"");
 
     std::vector<std::wstring> list() const;  // имена записей карантина
     unsigned long long count() const;

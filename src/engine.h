@@ -41,6 +41,7 @@ public:
 
     void setSensitivity(int s) { sensitivity_ = s; } // 0 low, 1 medium, 2 high
     void setUltraLight(bool v) { ultraLight_ = v; }
+    void setBackupRoot(std::wstring r) { backupRoot_ = std::move(r); }
     void setExclusions(std::vector<std::wstring> paths, std::vector<std::wstring> exts);
     void setFolderSensitivities(std::vector<std::pair<std::wstring,int>> map);
 
@@ -84,6 +85,7 @@ private:
     unsigned long long alerts_ = 0;
     int sensitivity_ = 1; // 0 low, 1 medium, 2 high
     bool ultraLight_ = false;
+    std::wstring backupRoot_;
 
     std::vector<std::wstring> excludePaths_;
     std::vector<std::wstring> excludeExts_;

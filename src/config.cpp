@@ -106,6 +106,12 @@ Settings loadSettings() {
         } else if (line.rfind("autoupdate=", 0) == 0) {
             std::string v = line.substr(11);
             s.autoUpdateCheck = !(v == "0" || v == "false" || v == "off");
+        } else if (line.rfind("backup_before_quarantine=", 0) == 0) {
+            std::string v = line.substr(25);
+            s.backupBeforeQuarantine = !(v == "0" || v == "false" || v == "off");
+        } else if (line.rfind("language=", 0) == 0) {
+            s.language = utf8ToW(line.substr(9));
+            if (s.language.empty()) s.language = L"en";
         } else if (line.rfind("exclude_path=", 0) == 0) {
             std::wstring w = utf8ToW(line.substr(13));
             if (!w.empty()) s.excludePaths.push_back(w);
@@ -145,6 +151,8 @@ bool saveSettings(const Settings& s) {
     f << "sensitivity=" << wToUtf8(sensitivityName(s.sensitivity)) << "\n";
     f << "ultralight=" << (s.ultraLight ? "1" : "0") << "\n";
     f << "autoupdate=" << (s.autoUpdateCheck ? "1" : "0") << "\n";
+    f << "backup_before_quarantine=" << (s.backupBeforeQuarantine ? "1" : "0") << "\n";
+    f << "language=" << wToUtf8(s.language.empty()?L"en":s.language) << "\n";
     f << "last_update_available=" << (s.lastUpdateAvailable ? "1" : "0") << "\n";
     if (!s.lastUpdateVersion.empty())
         f << "last_update_version=" << wToUtf8(s.lastUpdateVersion) << "\n";

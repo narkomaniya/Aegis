@@ -3,8 +3,13 @@ name: build
 on:
   push:
     branches: [ main ]
+    tags:
+      - 'v*'
   pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build-linux:
@@ -14,13 +19,14 @@ jobs:
       - name: Build (g++, C++17)
         run: |
           mkdir -p build
-          g++ -std=c++17 -O2 -Wall src/*.cpp -o build/aegis
-      - name: Smoke test (help must print and exit 0)
-        run: ./build/aegis help
+          g++ -std=c++17 -O2 -Wall src/*.cpp -o build/aegis-linux
+          chmod +x build/aegis-linux
+      - name: Smoke test
+        run: ./build/aegis-linux help
       - uses: actions/upload-artifact@v4
         with:
           name: aegis-linux
-          path: build/aegis
+          path: build/aegis-linux
 
   build-macos:
     runs-on: macos-latest
@@ -30,7 +36,7 @@ jobs:
         run: |
           mkdir -p build
           set -o pipefail
-          clang++ -std=c++17 -O2 -Wall src/*.cpp -o build/aegis \
+          clang++ -std=c++17 -O2 -Wall src/*.cpp -o build/aegis-macos \
             -framework CoreServices -framework CoreFoundation 2>&1 | tee build/clang.log
       - name: Dump errors into job summary
         if: failure()
@@ -41,12 +47,12 @@ jobs:
           grep -E "error:" build/clang.log | head -30 | while IFS= read -r line; do
             echo "::error::$line"
           done
-      - name: Smoke test (help must print and exit 0)
-        run: ./build/aegis help
+      - name: Smoke test
+        run: ./build/aegis-macos help
       - uses: actions/upload-artifact@v4
         with:
           name: aegis-macos
-          path: build/aegis
+          path: build/aegis-macos
 
   build-windows:
     runs-on: windows-latest
@@ -57,10 +63,38 @@ jobs:
         run: |
           if not exist build mkdir build
           g++ -std=c++17 -O2 -Wall src\*.cpp -o build\aegis.exe -lshell32 -lole32 -luuid
-      - name: Smoke test (help must print and exit 0)
+      - name: Smoke test
         shell: cmd
         run: build\aegis.exe help
       - uses: actions/upload-artifact@v4
         with:
           name: aegis-windows
           path: build\aegis.exe
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-linux, build-macos, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: Prepare assets
+        run: |
+          mkdir -p out
+          cp dist/aegis-linux/aegis-linux out/aegis-linux
+          cp dist/aegis-macos/aegis-macos out/aegis-macos
+          cp dist/aegis-windows/aegis.exe out/aegis.exe
+          chmod +x out/aegis-linux out/aegis-macos
+          (cd out && sha256sum aegis-linux aegis-macos aegis.exe > SHA256SUMS.txt)
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            out/aegis-linux
+            out/aegis-macos
+            out/aegis.exe
+            out/SHA256SUMS.txt
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
