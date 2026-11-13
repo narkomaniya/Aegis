@@ -32,6 +32,8 @@ static const wchar_t* kSuspiciousExt[] = {
     L".akira",   L".play",     L".hive",  L".revil",  L".sodinokibi",
     L".maze",    L".egregor",  L".darkside", L".avoslocker", L".babuk",
     L".clop",    L".stop",     L".djvu",  L".medusalocker",
+    L".rhysida", L".blacksuit", L".inc", L".8base", L".bianlian", L".nokoyawa",
+    L".royal",   L".cactus",    L".ransomhub", L".fargo", L".akira_readme",
 };
 
 // Форматы, где высокая энтропия это норма (сжатие/контейнер/медиа/БД) —
@@ -81,17 +83,36 @@ static const wchar_t* kRansomNoteTokens[] = {
 
 static bool isRansomNoteName(const std::wstring& name) {
     const std::wstring low = lower(name);
-    // записки обычно .txt/.html/.htm
+    // записки обычно .txt/.html/.htm, иногда без расширения
     size_t dot = low.find_last_of(L'.');
-    if (dot == std::wstring::npos) return false;
-    const std::wstring ext = low.substr(dot);
-    static const wchar_t* kNoteExts[] = { L".txt", L".html", L".htm" };
-    bool okExt = false;
-    for (const wchar_t* e : kNoteExts) if (ext == e) { okExt = true; break; }
-    if (!okExt) return false;
-
+    if (dot != std::wstring::npos) {
+        const std::wstring ext = low.substr(dot);
+        static const wchar_t* kNoteExts[] = { L".txt", L".html", L".htm" };
+        bool okExt = false;
+        for (const wchar_t* e : kNoteExts) if (ext == e) { okExt = true; break; }
+        if (!okExt) return false;
+    }
     for (const wchar_t* tok : kRansomNoteTokens)
         if (low.find(tok) != std::wstring::npos) return true;
+    return false;
+}
+
+// double extension like photo.jpg.lockbit -> very strong ransomware indicator
+static bool hasDoubleExtRansom(const std::wstring& name, const std::wstring& ext) {
+    if (ext.empty()) return false;
+    std::wstring low = lower(name);
+    if (low.size() <= ext.size() + 2) return false;
+    size_t prevDot = low.rfind(L'.', low.size() - ext.size() - 1);
+    if (prevDot == std::wstring::npos) return false;
+    std::wstring prevExt = low.substr(prevDot, low.size() - ext.size() - prevDot);
+    static const wchar_t* kCommon[] = {
+        L".doc",L".docx",L".xls",L".xlsx",L".ppt",L".pptx",L".pdf",
+        L".jpg",L".jpeg",L".png",L".bmp",L".gif",
+        L".txt",L".rtf",L".csv",L".sql",L".db",L".mdb",L".accdb",
+        L".zip",L".rar",L".7z",L".mp3",L".mp4",L".avi",L".mkv",
+        L".dwg",L".psd",L".ai",L".cdr",L".odt",L".ods"
+    };
+    for (const wchar_t* c : kCommon) if (prevExt == c) return true;
     return false;
 }
 
@@ -312,6 +333,24 @@ void Engine::checkRenames() {
     }
 }
 
+static void noteHitLocked(std::deque<std::chrono::steady_clock::time_point>& hits,
+                          unsigned long long& alerts, bool& emergency,
+                          std::chrono::steady_clock::time_point& until,
+                          int sensitivity) {
+    auto now = std::chrono::steady_clock::now();
+    hits.push_back(now);
+    auto window = std::chrono::seconds(10);
+    while (!hits.empty() && now - hits.front() > window) hits.pop_front();
+    size_t limit = 4;
+    if (sensitivity <= 0) limit = 6;
+    else if (sensitivity >= 2) limit = 3;
+    if (hits.size() >= limit) {
+        raiseEmergencyLocked(alerts, emergency, until,
+            L"EMERGENCY: multiple ransomware-like detections in a short time — attack in progress!");
+        ae::warn(L"new files will be copied to quarantine for 30 seconds");
+    }
+}
+
 // Windows: every ~1024 events we trim the working set of the process.
 // A resident guardian may hang in memory for months — keep the RSS tiny;
 // pages come back from the pagefile instantly when needed.
@@ -455,6 +494,7 @@ void Engine::onEvent(const FileEvent& e) {
                                   std::chrono::seconds(30);
             }
             ++alerts_;
+            noteHitLocked(hits_, alerts_, emergency_, emergencyUntil_, sensitivity_);
         }
         ae::alert(L"TAMPER ALERT: canary touched: " + full +
                   L" — something is messing with this folder!");
@@ -465,6 +505,7 @@ void Engine::onEvent(const FileEvent& e) {
     // 0c) Записка выкупа: типовое имя "how to decrypt ..." и т.п.
     if (isRansomNoteName(e.name)) {
         take(e, full, L"ransom note detected: " + e.name, false);
+        { std::lock_guard<std::mutex> lock(m_); noteHitLocked(hits_, alerts_, emergency_, emergencyUntil_, sensitivity_); }
         return;
     }
 
@@ -475,11 +516,17 @@ void Engine::onEvent(const FileEvent& e) {
         static const wchar_t* kNoteExtsSc[] =
             { L".txt", L".html", L".htm", L".md", L".ini", L".log" };
         if (inList(ext, kNoteExtsSc, sizeof(kNoteExtsSc) / sizeof(wchar_t*))) {
-            const std::string hit = ransomContentHit(full);
-            if (!hit.empty()) {
-                std::wstring hitw(hit.begin(), hit.end());
-                take(e, full, L"ransom note content: \"" + hitw + L"\"", false);
-                return;
+            // skip very large text files (ransom notes are small) to save IO/CPU
+            std::error_code ecSz;
+            auto sz = fs::file_size(fs::path(full), ecSz);
+            if (!ecSz && sz <= 2 * 1024 * 1024) {
+                const std::string hit = ransomContentHit(full);
+                if (!hit.empty()) {
+                    std::wstring hitw(hit.begin(), hit.end());
+                    take(e, full, L"ransom note content: \"" + hitw + L"\"", false);
+                    { std::lock_guard<std::mutex> lock(m_); noteHitLocked(hits_, alerts_, emergency_, emergencyUntil_, sensitivity_); }
+                    return;
+                }
             }
         }
     }
@@ -488,13 +535,17 @@ void Engine::onEvent(const FileEvent& e) {
     if (e.action == EventAction::Renamed &&
         !inList(oldExt, kSuspiciousExt, sizeof(kSuspiciousExt) / sizeof(wchar_t*)) &&
         !oldExt.empty() && susExt) {
-        take(e, full, L"dangerous rename: " + oldExt + L" -> " + ext, false);
+        take(e, full, L"dangerous rename: " + oldExt + L" -> " + ext +
+                 (hasDoubleExtRansom(e.name, ext) ? L" (double extension)" : L""), false);
+        { std::lock_guard<std::mutex> lock(m_); noteHitLocked(hits_, alerts_, emergency_, emergencyUntil_, sensitivity_); }
         return;
     }
 
     // 2) Dangerous extension on a new/modified file
     if (susExt) {
-        take(e, full, L"dangerous extension " + ext, false);
+        take(e, full, L"dangerous extension " + ext +
+                 (hasDoubleExtRansom(e.name, ext) ? L" (double extension)" : L""), false);
+        { std::lock_guard<std::mutex> lock(m_); noteHitLocked(hits_, alerts_, emergency_, emergencyUntil_, sensitivity_); }
         return;
     }
 
@@ -520,6 +571,7 @@ void Engine::onEvent(const FileEvent& e) {
             swprintf(buf, 16, L"%.2f", H);
             take(e, full, L"high entropy (" + std::wstring(buf) +
                  L"/8.0) — looks like encryption", false);
+            { std::lock_guard<std::mutex> lock(m_); noteHitLocked(hits_, alerts_, emergency_, emergencyUntil_, sensitivity_); }
             return;
         }
     }

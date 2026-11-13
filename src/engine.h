@@ -59,6 +59,7 @@ private:
     std::set<std::wstring> ignored_;   // пути после restore — не забирать обратно
     std::deque<std::chrono::steady_clock::time_point> rate_;     // все события за 1 с
     std::deque<std::chrono::steady_clock::time_point> renames_;  // только rename за 1 с
+    std::deque<std::chrono::steady_clock::time_point> hits_;     // подозрительные срабатывания за окно
     unsigned long long events_ = 0;    // счётчик для периодического trimWorkingSet
     bool emergency_ = false;
     std::chrono::steady_clock::time_point emergencyUntil_{};
