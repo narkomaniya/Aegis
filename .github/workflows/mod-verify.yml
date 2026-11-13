@@ -1,0 +1,59 @@
+name: mod-verify
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'mods/**'
+      - '.github/workflows/mod-verify.yml'
+      - 'src/mods.*'
+      - 'src/main.cpp'
+  pull_request:
+    paths:
+      - 'mods/**'
+      - '.github/workflows/mod-verify.yml'
+      - 'src/mods.*'
+      - 'src/main.cpp'
+  workflow_dispatch:
+
+jobs:
+  verify-mods-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Aegis (for mod verifier)
+        run: |
+          mkdir -p build
+          g++ -std=c++17 -O2 -Wall src/*.cpp -o build/aegis-linux
+      - name: Automatic mod verification (strict publish checks)
+        run: |
+          set -e
+          mkdir -p "$HOME/.aegis/mods"
+          if compgen -G "mods/*.aegismod" > /dev/null || compgen -G "mods/*.mod" > /dev/null || compgen -G "mods/*.txt" > /dev/null; then
+            cp -f mods/*.aegismod "$HOME/.aegis/mods/" 2>/dev/null || true
+            cp -f mods/*.mod "$HOME/.aegis/mods/" 2>/dev/null || true
+            cp -f mods/*.txt "$HOME/.aegis/mods/" 2>/dev/null || true
+          fi
+          ./build/aegis-linux mod verify --all --strict
+
+  verify-mods-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Aegis (for mod verifier)
+        shell: cmd
+        run: |
+          if not exist build mkdir build
+          g++ -std=c++17 -O2 -Wall src\*.cpp -o build\aegis.exe -lshell32 -lole32 -luuid
+      - name: Automatic mod verification (strict publish checks)
+        shell: pwsh
+        run: |
+          $modsHome = Join-Path $env:USERPROFILE ".aegis\mods"
+          New-Item -ItemType Directory -Force -Path $modsHome | Out-Null
+          if (Test-Path "mods") {
+            Get-ChildItem mods -File -Include *.aegismod,*.mod,*.txt -ErrorAction SilentlyContinue | ForEach-Object {
+              Copy-Item $_.FullName -Destination $modsHome -Force
+            }
+          }
+          .\build\aegis.exe mod verify --all --strict
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

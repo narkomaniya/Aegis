@@ -1,34 +1,43 @@
-# Aegis Mods / Tweaks (in development)
+# Aegis Mods / Tweaks (v5)
 
-This folder is for Aegis tweaks/mods and author experiments.
+This folder contains Aegis mod/tweak manifests and examples.
 
-> Status: **in development**. The mod/tweak system is an early foundation (manifest format + author tooling + simple UI theme tweaks). Runtime mod loading/execution is intentionally limited for now.
+## v5 highlights
+- **Mods/Tweaks Manager UI** in the app (interactive interface)
+- **CLI author tools:** `create`, `info`, `verify`, `enable/disable`, `apply`, `publish`
+- **Automatic verification:**
+  - Local: `aegis mod verify <mod>` or `--all` (`--strict` for publish-level checks)
+  - Publish: `aegis mod publish <mod>` runs strict automatic checks and writes a report/artifact to `~/.aegis/mods-publish/`
+  - CI: `.github/workflows/mod-verify.yml` auto-verifies mod changes/PRs
 
-## What works now
-- `mods/` folder support (repo and `~/.aegis/mods` at runtime)
-- Author tool (CLI): `aegis mod list|path|create <name>|apply <name>`
-- Simple UI theme tweaks via `applies=ui_theme:white` or `applies=ui_theme:black` (in development)
+## Runtime locations
+- Repo examples: `mods/`
+- Installed/user mods: `~/.aegis/mods`
 
-## Manifest format (draft, `.aegismod`)
-Example fields:
-```ini
-name=My Tweak
-id=my-tweak
-author=you
-version=0.1.0
-type=tweak
-status=in-development
-description=...
-applies=ui_theme:white
+## Manifest format (`.aegismod`, key=value)
+Recommended/required fields for publish:
+- `name` (required)
+- `id` (required, safe chars: letters/digits/._-)
+- `version` (required)
+- `author`, `type`, `status`, `description` (recommended)
+- `applies` (runtime action; current supported: `ui_theme:white|black|default`)
+- `min_version`, `homepage` (optional)
+
+## Included example tweaks
+- `theme-white-black.aegismod` — UI theme tweak (white)
+- `theme-white-black-black.aegismod` — UI theme tweak (black)
+
+Apply:
+```bash
+aegis mod verify theme-white-black --strict
+aegis mod apply theme-white-black
 ```
 
-## Included example tweak
-- `theme-white-black.aegismod` — UI theme/color tweak (white/black), **in development**. Apply via:
-  - `aegis mod apply theme-white-black` (or use Settings → UI theme/tweak)
-
-## For authors
-Create a scaffold:
+## Author/publish flow
 ```bash
 aegis mod create my-tweak
+# edit ~/.aegis/mods/my-tweak.aegismod
+aegis mod verify my-tweak
+aegis mod publish my-tweak   # automatic strict verification + report/artifact
 ```
-Then edit the generated file in your `~/.aegis/mods` folder and share it. More hook points and a fuller tweak API are planned.
+When submitting/publishing a mod, include the manifest and publish report; CI mod verification should pass.

@@ -1,8 +1,10 @@
 name=UI Theme: Black
 id=theme-white-black-black
 author=Aegis
-version=0.1.0
-type=tweak
-status=in-development
-description=Applies the black/monochrome UI theme tweak. In development.
+version=1.0.0
+type=theme
+status=verified
+description=Switches Aegis UI log/tag accent theme to black (dim monochrome tweak). Verified for v5 mod platform.
 applies=ui_theme:black
+min_version=v5.0
+homepage=https://github.com/narkomaniya/Aegis

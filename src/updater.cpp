@@ -14,6 +14,9 @@
 #include "logger.h"
 #include "version.h"
 
+#include <algorithm>
+#include <cctype>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -171,6 +174,75 @@ static std::wstring tempDir() {
     return d;
 }
 
+static std::string toLowerAscii(std::string s) {
+    for (auto& c : s) c = (char)std::tolower((unsigned char)c);
+    return s;
+}
+
+static std::string parseExpectedSha256(const std::string& sums, const std::wstring& assetW) {
+    std::string asset(assetW.begin(), assetW.end());
+    std::istringstream iss(sums);
+    std::string line;
+    while (std::getline(iss, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        // format: <hash>  <filename>  or  <hash> *<filename>
+        std::istringstream ls(line);
+        std::string hash, file;
+        if (!(ls >> hash >> file)) continue;
+        if (!file.empty() && (file[0] == '*' || file[0] == ' ')) file.erase(0,1);
+        // basename compare
+        auto pos = file.find_last_of("/\\");
+        std::string base = (pos == std::string::npos) ? file : file.substr(pos + 1);
+        if (base == asset && hash.size() >= 32) return toLowerAscii(hash);
+    }
+    return "";
+}
+
+static std::string computeSha256OfFile(const std::wstring& pathW) {
+#ifdef _WIN32
+    // certutil -hashfile "path" SHA256
+    std::wstring cmd = L"certutil -hashfile \"" + pathW + L"\" SHA256";
+    FILE* pipe = _wpopen(cmd.c_str(), L"r");
+    if (!pipe) return "";
+    char buf[512];
+    std::string out;
+    while (fgets(buf, sizeof(buf), pipe)) out += buf;
+    _pclose(pipe);
+    std::string hex;
+    for (char c : out) {
+        if ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) hex.push_back((char)std::tolower((unsigned char)c));
+        else if (!hex.empty()) break; // stop after first token-like hex block line may include spaces, so be careful
+    }
+    // certutil prints hash possibly with spaces/newlines on second line; extract longest hex run
+    std::string best, cur;
+    for (char c : out) {
+        if ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) cur.push_back((char)std::tolower((unsigned char)c));
+        else { if (cur.size() > best.size()) best = cur; cur.clear(); }
+    }
+    if (cur.size() > best.size()) best = cur;
+    return (best.size() >= 64) ? best.substr(0,64) : "";
+#else
+    auto tryCmd = [](const std::string& cmd)->std::string{
+        FILE* pipe = popen(cmd.c_str(), "r");
+        if (!pipe) return "";
+        char buf[512]; std::string out;
+        while (fgets(buf, sizeof(buf), pipe)) out += buf;
+        pclose(pipe);
+        std::string best, cur;
+        for (char c : out) {
+            if ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) cur.push_back((char)std::tolower((unsigned char)c));
+            else { if (cur.size() > best.size()) best = cur; cur.clear(); }
+        }
+        if (cur.size() > best.size()) best = cur;
+        return (best.size() >= 64) ? best.substr(0,64) : "";
+    };
+    std::string path(pathW.begin(), pathW.end());
+    std::string h = tryCmd("sha256sum \"" + path + "\" 2>/dev/null");
+    if (h.empty()) h = tryCmd("shasum -a 256 \"" + path + "\" 2>/dev/null");
+    return h;
+#endif
+}
+
 void cleanupOldBinary() {
     std::wstring self = selfPath();
     if (self.empty()) return;
@@ -253,21 +325,62 @@ int runUpdate(bool assumeYes) {
         }
     }
 
-    const std::wstring url =
-        std::wstring(L"https://github.com/narkomaniya/Aegis/releases/download/") +
-        tag + L"/" + platformAsset();
+    const std::wstring asset = platformAsset();
+    const std::wstring baseUrl = std::wstring(L"https://github.com/narkomaniya/Aegis/releases/download/") + tag + L"/";
+    const std::wstring url = baseUrl + asset;
+    const std::wstring sumsUrl = baseUrl + L"SHA256SUMS.txt";
 
     std::wstring self = selfPath();
     if (self.empty()) { warn(L"cannot determine own path"); return 2; }
 
     const std::wstring newPath = self + L".new";
     const std::wstring oldPath = self + L".old";
+#ifdef _WIN32
+    const std::wstring sumsPath = tmp + L"\\aegis-sha256sums.txt";
+#else
+    const std::wstring sumsPath = tmp + L"/aegis-sha256sums.txt";
+#endif
 
-    info(L"downloading " + platformAsset() + L" (" + tag + L")...");
+    info(L"downloading " + asset + L" (" + tag + L")...");
     fs::remove(fs::path(newPath), ec);
     if (!httpGetToFile(url, newPath)) {
         warn(L"download failed");
         return 2;
+    }
+
+    // Integrity check (best-effort but enforced when checksum is available)
+    info(L"verifying download integrity (SHA256)...");
+    bool verified = false;
+    fs::remove(fs::path(sumsPath), ec);
+    if (httpGetToFile(sumsUrl, sumsPath)) {
+        std::ifstream sf(fs::path(sumsPath), std::ios::binary);
+        if (sf) {
+            std::ostringstream ss; ss << sf.rdbuf();
+            std::string expected = parseExpectedSha256(ss.str(), asset);
+            if (!expected.empty()) {
+                std::string actual = computeSha256OfFile(newPath);
+                if (actual.empty()) {
+                    warn(L"could not compute SHA256 for downloaded file; update aborted for safety");
+                    fs::remove(fs::path(newPath), ec);
+                    return 2;
+                }
+                if (toLowerAscii(actual) != toLowerAscii(expected)) {
+                    warn(L"SHA256 mismatch! expected " + wideOfUtf8(expected) + L" got " + wideOfUtf8(actual));
+                    warn(L"update aborted (integrity check failed)");
+                    fs::remove(fs::path(newPath), ec);
+                    return 2;
+                }
+                verified = true;
+                ok(L"SHA256 verified: " + wideOfUtf8(actual.substr(0, 16)) + L"...");
+            } else {
+                warn(L"SHA256SUMS.txt downloaded but no entry found for " + asset + L" (continuing without verification)");
+            }
+        }
+    } else {
+        warn(L"could not download SHA256SUMS.txt (continuing without verification)");
+    }
+    if (!verified) {
+        console(L"note: integrity verification was not completed (checksum unavailable).");
     }
 
     // замена: старый -> .old, новый -> на место. rename у работающего

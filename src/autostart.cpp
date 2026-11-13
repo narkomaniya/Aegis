@@ -50,7 +50,7 @@ int runAutostart(const std::wstring& mode) {
     if (mode == L"off") {
         RegDeleteValueW(hKey, kRegValue);   // нет значения — тоже успех
         RegCloseKey(hKey);
-        ok(L"autostart disabled");
+        ok(L"autostart/background protection disabled");
         return 0;
     }
 
@@ -62,8 +62,57 @@ int runAutostart(const std::wstring& mode) {
     RegCloseKey(hKey);
     if (rc != ERROR_SUCCESS) { warn(L"cannot write HKCU Run key"); return 1; }
 
-    ok(L"autostart enabled: " + self);
+    ok(L"autostart/background protection enabled (daemon at login): " + self);
     return 0;
+}
+
+int autostartStatus() {
+    HKEY hKey = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, kRegPath, 0, KEY_QUERY_VALUE, &hKey) != ERROR_SUCCESS) {
+        console(L"Autostart: unknown (cannot read HKCU Run key)");
+        return 0;
+    }
+    wchar_t buf[2048] = {};
+    DWORD type = 0, size = sizeof(buf);
+    LSTATUS rc = RegQueryValueExW(hKey, kRegValue, nullptr, &type, reinterpret_cast<LPBYTE>(buf), &size);
+    RegCloseKey(hKey);
+    if (rc == ERROR_SUCCESS && type == REG_SZ) {
+        console(L"Autostart: ENABLED");
+        console(L"  Command: " + std::wstring(buf));
+    } else {
+        console(L"Autostart: DISABLED");
+    }
+    console(L"Mode: user-level background protection via autostart + `aegis watch --daemon`");
+    return 0;
+}
+
+int runServiceCommand(const std::wstring& action) {
+    if (action == L"status") return autostartStatus();
+    if (action == L"install" || action == L"enable") return runAutostart(L"on");
+    if (action == L"uninstall" || action == L"disable") return runAutostart(L"off");
+    if (action == L"start") {
+        console(L"Starting background protection now (best effort): launching `aegis watch --daemon`...");
+        std::wstring self = selfPath();
+        if (self.empty()) { warn(L"cannot determine own path"); return 1; }
+        std::wstring cmd = L"\"" + self + L"\" watch --daemon";
+        STARTUPINFOW si{}; si.cb = sizeof(si);
+        PROCESS_INFORMATION pi{};
+        std::wstring mutableCmd = cmd;
+        if (CreateProcessW(nullptr, mutableCmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+            CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+            ok(L"Background daemon launch requested.");
+            return 0;
+        }
+        warn(L"Failed to start background daemon process.");
+        return 1;
+    }
+    if (action == L"stop") {
+        console(L"Stop is best-effort for daemon mode. If running interactively press q/Ctrl+C; for background processes stop via Task Manager or reboot/login cycle.");
+        console(L"Tip: `aegis autostart off` disables future auto-start.");
+        return 0;
+    }
+    warn(L"usage: aegis service status|install|uninstall|start|stop");
+    return 1;
 }
 
 #else // Linux / macOS
@@ -92,7 +141,7 @@ int runAutostart(const std::wstring& mode) {
     if (mode == L"off") {
         std::error_code ec;
         fs::remove(plist, ec);              // нет файла — тоже успех
-        ok(L"autostart disabled (remove the agent with launchctl bootout if it is running)");
+        ok(L"autostart/background protection disabled (LaunchAgent plist removed)");
         return 0;
     }
 
@@ -120,8 +169,39 @@ int runAutostart(const std::wstring& mode) {
     f << body;
     f.close();
 
-    ok(L"autostart enabled: " + plist.wstring());
+    ok(L"autostart/background protection enabled (LaunchAgent): " + plist.wstring());
     return 0;
+}
+
+int autostartStatus() {
+    std::error_code ec;
+    auto p = fs::path(agentPath());
+    if (fs::exists(p, ec)) {
+        console(L"Autostart (LaunchAgent): ENABLED");
+        console(L"  Plist: " + p.wstring());
+    } else {
+        console(L"Autostart (LaunchAgent): DISABLED");
+    }
+    console(L"Mode: user-level background protection via LaunchAgent + `aegis watch --daemon` (KeepAlive)");
+    return 0;
+}
+
+int runServiceCommand(const std::wstring& action) {
+    if (action == L"status") return autostartStatus();
+    if (action == L"install" || action == L"enable") return runAutostart(L"on");
+    if (action == L"uninstall" || action == L"disable") return runAutostart(L"off");
+    if (action == L"start") {
+        console(L"Best-effort start: load LaunchAgent with launchctl if available, or run `aegis watch --daemon` manually.");
+        console(L"Try: launchctl bootstrap gui/$UID " + fs::path(agentPath()).string());
+        return 0;
+    }
+    if (action == L"stop") {
+        console(L"Best-effort stop: unload LaunchAgent via launchctl or stop daemon process.");
+        console(L"Try: launchctl bootout gui/$UID " + fs::path(agentPath()).string());
+        return 0;
+    }
+    warn(L"usage: aegis service status|install|uninstall|start|stop");
+    return 1;
 }
 
 #else // Linux
@@ -143,7 +223,7 @@ int runAutostart(const std::wstring& mode) {
     if (mode == L"off") {
         std::error_code ec;
         fs::remove(desktop, ec);            // нет файла — тоже успех
-        ok(L"autostart disabled");
+        ok(L"autostart/background protection disabled");
         return 0;
     }
 
@@ -165,8 +245,45 @@ int runAutostart(const std::wstring& mode) {
     f << body;
     f.close();
 
-    ok(L"autostart enabled: " + desktop.wstring());
+    ok(L"autostart/background protection enabled: " + desktop.wstring());
     return 0;
+}
+
+int autostartStatus() {
+    std::error_code ec;
+    auto p = fs::path(desktopPath());
+    if (fs::exists(p, ec)) {
+        console(L"Autostart (XDG): ENABLED");
+        console(L"  Desktop file: " + p.wstring());
+    } else {
+        console(L"Autostart (XDG): DISABLED");
+    }
+    console(L"Mode: user-level background protection via XDG autostart + `aegis watch --daemon`");
+    return 0;
+}
+
+int runServiceCommand(const std::wstring& action) {
+    if (action == L"status") return autostartStatus();
+    if (action == L"install" || action == L"enable") return runAutostart(L"on");
+    if (action == L"uninstall" || action == L"disable") return runAutostart(L"off");
+    if (action == L"start") {
+        console(L"Best-effort start: run `aegis watch --daemon` now (or re-login if XDG autostart is enabled).");
+        std::string self = fs::path(selfPath()).string();
+        if (!self.empty()) {
+            std::string cmd = "\"" + self + "\" watch --daemon >/dev/null 2>&1 &";
+            std::system(cmd.c_str());
+            ok(L"Background daemon launch requested (best effort).");
+            return 0;
+        }
+        warn(L"cannot determine own path");
+        return 1;
+    }
+    if (action == L"stop") {
+        console(L"Best-effort stop: stop the running daemon process (e.g. pkill -f 'aegis.*--daemon') or end it manually.");
+        return 0;
+    }
+    warn(L"usage: aegis service status|install|uninstall|start|stop");
+    return 1;
 }
 
 #endif // __APPLE__

@@ -28,6 +28,7 @@
 #include "updater.h"
 #include "autostart.h"
 #include "config.h"
+#include "mods.h"
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -200,128 +201,271 @@ static std::string to8(const std::wstring& w){
     return s;
 }
 
-// (reserved for future mod parsing helpers)
+// --- Mods/Tweaks platform (v5) ---
 
-struct ModInfo {
-    std::wstring file;
-    std::wstring name;
-    std::wstring id;
-    std::wstring type;
-    std::wstring status;
-    std::wstring applies;
-};
+static void showHeader();
+static bool openPath(const std::wstring& path);
 
-static ModInfo readModInfo(const fs::path& p) {
-    ModInfo m;
-    m.file = p.filename().wstring();
-    m.name = p.stem().wstring();
-    m.status = L"unknown";
-    std::ifstream f(p, std::ios::binary);
-    if (!f) return m;
-    std::string line;
-    while (std::getline(f, line)) {
-        if (!line.empty() && line.back()=='\r') line.pop_back();
-        auto eq = line.find('=');
-        if (eq == std::string::npos) continue;
-        std::string k = line.substr(0, eq), v = line.substr(eq+1);
-        if (k=="name") m.name = toW(v);
-        else if (k=="id") m.id = toW(v);
-        else if (k=="type") m.type = toW(v);
-        else if (k=="status") m.status = toW(v);
-        else if (k=="applies") m.applies = toW(v);
+static ModManifest findModByKey(const Settings& settings, const std::wstring& keyRaw) {
+    const std::wstring key = lowerW(trimW(keyRaw));
+    auto mods = scanMods(settings);
+    for (auto& m : mods) {
+        fs::path p(m.file);
+        if (lowerW(m.file) == key || lowerW(p.stem().wstring()) == key || lowerW(m.id) == key || lowerW(m.name) == key) return m;
     }
-    return m;
+    // try path (cwd-relative or absolute), then runtime mods folder
+    std::error_code ec;
+    fs::path direct(keyRaw);
+    if (fs::exists(direct, ec)) return loadModManifest(direct, settings);
+    fs::path inMods = fs::path(modsDirPath()) / direct;
+    if (fs::exists(inMods, ec)) return loadModManifest(inMods, settings);
+    // also try filename in runtime mods dir
+    fs::path byName = fs::path(modsDirPath()) / direct.filename();
+    if (fs::exists(byName, ec)) return loadModManifest(byName, settings);
+    return ModManifest{};
 }
 
-static std::vector<ModInfo> listMods() {
-    std::vector<ModInfo> out;
-    std::error_code ec;
-    fs::path md = fs::path(modsDir());
-    if (!fs::exists(md, ec)) return out;
-    for (auto& e : fs::directory_iterator(md, ec)) {
-        if (ec) break;
-        if (!e.is_regular_file(ec)) continue;
-        auto ext = lowerW(e.path().extension().wstring());
-        if (ext == L".aegismod" || ext == L".mod" || ext == L".txt") out.push_back(readModInfo(e.path()));
+static void printModVerify(const ModVerifyResult& r, const std::wstring& title = L"Verification") {
+    console(L"  [" + title + L"] " + (r.ok ? L"PASS" : L"FAIL"));
+    for (auto& e : r.errors) console(L"    ERROR: " + e);
+    for (auto& w : r.warnings) console(L"    WARN:  " + w);
+    for (auto& i : r.info) console(L"    INFO:  " + i);
+}
+
+static void modsManagerMenu(Settings& settings) {
+    while (true) {
+        settings = loadSettings();
+        applyUiTheme(settings);
+        showHeader();
+        console(L"  [ MODS / TWEAKS MANAGER ]  (v5 mod interface)");
+        console(L"");
+        console(L"  Mods folder: " + modsDirPath());
+        console(L"  Note: mod runtime is extensible; supported apply actions depend on build. Publish uses automatic verification checks.");
+        console(L"");
+        auto mods = scanMods(settings);
+        if (mods.empty()) {
+            console(L"  No mods installed.");
+        } else {
+            for (size_t i = 0; i < mods.size(); ++i) {
+                const auto& m = mods[i];
+                auto vr = verifyMod(m, false);
+                std::wstring state = m.enabled ? L"ENABLED" : L"DISABLED";
+                std::wstring health = vr.ok ? L"OK" : L"ISSUES";
+                console(L"  " + std::to_wstring(i + 1) + L". " + m.name + L"  [" + state + L", " + health + L"]");
+                console(L"      id=" + (m.id.empty()?L"-":m.id) + L"  v=" + (m.version.empty()?L"-":m.version) + L"  type=" + (m.type.empty()?L"-":m.type) + L"  status=" + (m.status.empty()?L"-":m.status));
+                if (!m.applies.empty()) console(L"      applies: " + m.applies);
+            }
+        }
+        console(L"");
+        console(L"  1. View mod details      5. Verify mod (auto checks)");
+        console(L"  2. Enable/disable mod    6. Verify ALL mods");
+        console(L"  3. Apply mod             7. Publish mod (auto verification + report)");
+        console(L"  4. Create mod scaffold   8. Open mods folder");
+        console(L"  r. Refresh               0. Back");
+        console(L"");
+        prompt(L"  > ");
+        std::wstring line; if (!std::getline(std::wcin, line)) return;
+        line = trimW(line);
+        if (line == L"0" || line.empty()) return;
+        if (line == L"r" || line == L"R") continue;
+        if (line == L"8") { openPath(modsDirPath()); continue; }
+        if (line == L"4") {
+            showHeader(); console(L"  [ CREATE MOD SCAFFOLD ]"); console(L"");
+            console(L"  Enter mod name/id (e.g. my-cool-tweak):"); prompt(L"  > ");
+            std::wstring name; if (!std::getline(std::wcin, name)) return;
+            std::wstring outPath, err;
+            auto id = createModScaffold(name, outPath, err);
+            if (id.empty()) warn(err.empty()?L"Failed to create mod scaffold.":err);
+            else { ok(L"Created mod scaffold: " + outPath); console(L"Edit manifest, then run: aegis mod verify " + id + L"  and  aegis mod publish " + id); }
+            waitEnter();
+            continue;
+        }
+        if (line == L"6") {
+            showHeader(); console(L"  [ VERIFY ALL MODS ]"); console(L"");
+            auto r = verifyAllMods(settings, false);
+            printModVerify(r, L"ALL MODS");
+            console(L"");
+            console(L"  Tip: strict publish checks: aegis mod publish <mod> (or option 7)");
+            waitEnter();
+            continue;
+        }
+        // actions that need selection
+        console(L"  Enter mod number (or 0 to cancel):"); prompt(L"  > ");
+        std::wstring n; if (!std::getline(std::wcin, n)) return; n = trimW(n);
+        size_t num = 0; bool okn = !n.empty();
+        for (wchar_t c : n) if (c < L'0' || c > L'9') { okn = false; break; }
+        if (okn) for (wchar_t c : n) num = num * 10 + (size_t)(c - L'0');
+        if (!okn || num == 0) continue;
+        mods = scanMods(settings);
+        if (num > mods.size()) { warn(L"No such mod."); waitEnter(); continue; }
+        auto m = mods[num - 1];
+        if (line == L"1") {
+            showHeader(); console(L"  [ MOD DETAILS ]"); console(L"");
+            console(L"  Name:        " + m.name);
+            console(L"  ID:          " + (m.id.empty()?L"-":m.id));
+            console(L"  Version:     " + (m.version.empty()?L"-":m.version));
+            console(L"  Type:        " + (m.type.empty()?L"-":m.type));
+            console(L"  Status:      " + (m.status.empty()?L"-":m.status));
+            console(L"  Author:      " + (m.author.empty()?L"-":m.author));
+            console(L"  Enabled:     " + std::wstring(m.enabled?L"yes":L"no"));
+            console(L"  File:        " + m.file);
+            console(L"  Path:        " + m.path);
+            if (!m.applies.empty()) console(L"  Applies:     " + m.applies);
+            if (!m.minVersion.empty()) console(L"  Min version: " + m.minVersion);
+            if (!m.homepage.empty()) console(L"  Homepage:    " + m.homepage);
+            if (!m.description.empty()) { console(L"  Description: " + m.description); }
+            console(L"");
+            auto vr = verifyMod(m, false);
+            printModVerify(vr, L"AUTO VERIFY");
+            waitEnter();
+        } else if (line == L"2") {
+            setModEnabled(settings, m, !m.enabled);
+            saveSettings(settings);
+            ok(std::wstring(L"Mod ") + (m.enabled ? L"disabled" : L"enabled") + L": " + m.name);
+            waitEnter();
+        } else if (line == L"3") {
+            showHeader(); console(L"  [ APPLY MOD ]"); console(L"");
+            std::wstring msg;
+            if (applyMod(m, settings, msg)) ok(msg); else warn(msg);
+            waitEnter();
+        } else if (line == L"5") {
+            showHeader(); console(L"  [ VERIFY MOD ]"); console(L"");
+            auto vr = verifyMod(m, false);
+            printModVerify(vr, m.name);
+            waitEnter();
+        } else if (line == L"7") {
+            showHeader(); console(L"  [ PUBLISH MOD (AUTO VERIFICATION) ]"); console(L"");
+            console(L"  Running strict automated checks before publish...");
+            std::wstring report, summary;
+            bool pass = publishMod(m, true, report, summary);
+            console(L"");
+            if (pass) ok(summary); else warn(summary);
+            console(L"  Submission tip: include the .aegismod and publish report in your PR/submission. CI mod-verify workflow also auto-checks mods.");
+            waitEnter();
+        } else {
+            warn(L"Unknown action.");
+            waitEnter();
+        }
     }
-    std::sort(out.begin(), out.end(), [](const ModInfo& a, const ModInfo& b){ return a.file < b.file; });
-    return out;
 }
 
 static int runModCommand(const std::vector<std::wstring>& argsIn) {
     auto args = argsIn;
+    Settings s = loadSettings();
+    applyUiTheme(s);
     std::error_code ec;
-    fs::create_directories(fs::path(modsDir()), ec);
+    fs::create_directories(fs::path(modsDirPath()), ec);
+
     if (args.empty() || args[0] == L"list") {
-        console(L"Mods folder: " + modsDir());
-        auto mods = listMods();
+        console(L"Mods folder: " + modsDirPath());
+        auto mods = scanMods(s);
         if (mods.empty()) { console(L"  (no mods found)"); console(L"  Tip: create one with: aegis mod create my-tweak"); return 0; }
         for (auto& m : mods) {
-            std::wstring line = L"  - " + m.name + L" [" + m.file + L"]";
-            if (!m.type.empty()) line += L" type=" + m.type;
-            if (!m.status.empty()) line += L" status=" + m.status;
-            console(line);
+            auto vr = verifyMod(m, false);
+            console(L"  - " + m.name + L" [" + m.file + L"] id=" + (m.id.empty()?L"-":m.id) +
+                    L" v=" + (m.version.empty()?L"-":m.version) + L" " + (m.enabled?L"enabled":L"disabled") +
+                    L" " + (vr.ok?L"verify:ok":L"verify:issues"));
             if (!m.applies.empty()) console(L"      applies: " + m.applies);
         }
         return 0;
     }
-    if (args[0] == L"path") {
-        console(modsDir());
-        return 0;
-    }
+    if (args[0] == L"path") { console(modsDirPath()); return 0; }
+    if (args[0] == L"ui" || args[0] == L"manager") { modsManagerMenu(s); return 0; }
+
     if (args[0] == L"create") {
         if (args.size() < 2) { warn(L"usage: aegis mod create <name>"); return 1; }
-        std::wstring name = trimW(args[1]);
-        for (auto& c : name) if (c==L' '||c==L'\\'||c==L'/') c = L'-';
-        if (name.empty()) { warn(L"invalid mod name"); return 1; }
-        fs::path out = fs::path(modsDir()) / (name + L".aegismod");
-        if (fs::exists(out, ec)) { warn(L"mod already exists: " + out.wstring()); return 1; }
-        std::ofstream f(out, std::ios::binary | std::ios::trunc);
-        if (!f) { warn(L"could not create mod file"); return 1; }
-        f << "name=" << to8(name) << "\n";
-        f << "id=" << to8(name) << "\n";
-        f << "author=\n";
-        f << "version=0.1.0\n";
-        f << "type=tweak\n";
-        f << "status=in-development\n";
-        f << "description=\n";
-        f << "applies=\n";
-        f << "\n# Aegis mod/tweak manifest (author tool scaffold)\n";
-        f << "# This is a starter file for tweak authors. Runtime mod loading is limited/in development.\n";
-        f << "# For UI theme tweaks, you can set: applies=ui_theme:white or ui_theme:black and run: aegis mod apply " << to8(name) << "\n";
-        ok(L"Created mod scaffold: " + out.wstring());
-        console(L"Edit the file to describe your tweak. (Mod system in development)");
+        std::wstring outPath, err;
+        auto id = createModScaffold(args[1], outPath, err);
+        if (id.empty()) { warn(err.empty()?L"Failed to create mod scaffold.":err); return 1; }
+        ok(L"Created mod scaffold: " + outPath);
+        console(L"Next: edit manifest, then run `aegis mod verify " + id + L"` and `aegis mod publish " + id + L"` (automatic verification).");
         return 0;
     }
+
+    if (args[0] == L"verify") {
+        bool all = false, strict = false;
+        std::wstring key;
+        for (size_t i=1;i<args.size();++i) {
+            if (args[i]==L"--all" || args[i]==L"-a") all = true;
+            else if (args[i]==L"--strict" || args[i]==L"--publish") strict = true;
+            else key = args[i];
+        }
+        if (all || key.empty()) {
+            auto r = verifyAllMods(s, strict);
+            printModVerify(r, strict ? L"ALL MODS (STRICT)" : L"ALL MODS");
+            return r.ok ? 0 : 1;
+        }
+        auto m = findModByKey(s, key);
+        if (m.path.empty()) { warn(L"mod not found: " + key); return 1; }
+        auto r = verifyMod(m, strict);
+        printModVerify(r, m.name);
+        return r.ok ? 0 : 1;
+    }
+
+    if (args[0] == L"info") {
+        if (args.size() < 2) { warn(L"usage: aegis mod info <name|id|file>"); return 1; }
+        auto m = findModByKey(s, args[1]);
+        if (m.path.empty()) { warn(L"mod not found: " + args[1]); return 1; }
+        console(L"Name: " + m.name);
+        console(L"ID: " + (m.id.empty()?L"-":m.id));
+        console(L"Version: " + (m.version.empty()?L"-":m.version));
+        console(L"Type: " + (m.type.empty()?L"-":m.type));
+        console(L"Status: " + (m.status.empty()?L"-":m.status));
+        console(L"Author: " + (m.author.empty()?L"-":m.author));
+        console(L"Enabled: " + std::wstring(m.enabled?L"yes":L"no"));
+        console(L"File: " + m.file);
+        console(L"Path: " + m.path);
+        if (!m.applies.empty()) console(L"Applies: " + m.applies);
+        if (!m.description.empty()) console(L"Description: " + m.description);
+        auto vr = verifyMod(m, false);
+        printModVerify(vr, L"AUTO VERIFY");
+        return vr.ok ? 0 : 1;
+    }
+
+    if (args[0] == L"enable" || args[0] == L"disable") {
+        if (args.size() < 2) { warn(L"usage: aegis mod enable|disable <mod>"); return 1; }
+        auto m = findModByKey(s, args[1]);
+        if (m.path.empty()) { warn(L"mod not found: " + args[1]); return 1; }
+        bool en = (args[0] == L"enable");
+        setModEnabled(s, m, en);
+        saveSettings(s);
+        ok(std::wstring(L"Mod ") + (en?L"enabled":L"disabled") + L": " + m.name);
+        return 0;
+    }
+
     if (args[0] == L"apply") {
         if (args.size() < 2) { warn(L"usage: aegis mod apply <name|file|path>"); return 1; }
-        std::wstring key = trimW(args[1]);
-        fs::path target;
-        for (auto& m : listMods()) {
-            if (m.file == key || m.name == key || m.id == key || fs::path(m.file).stem().wstring() == key) { target = fs::path(modsDir()) / m.file; break; }
-        }
-        if (target.empty()) {
-            fs::path p(key);
-            if (p.is_absolute() || key.find(L'\\') != std::wstring::npos || key.find(L'/') != std::wstring::npos) target = p;
-            else target = fs::path(modsDir()) / key;
-        }
-        if (!fs::exists(target, ec)) { warn(L"mod not found: " + key); return 1; }
-        ModInfo mi = readModInfo(target);
-        if (mi.applies == L"ui_theme:white" || mi.applies == L"ui_theme:black" || mi.applies == L"ui_theme:default") {
-            Settings s = loadSettings();
-            s.uiTheme = mi.applies.substr(std::wstring(L"ui_theme:").size());
-            saveSettings(s);
-            applyUiTheme(s);
-            ok(L"Applied tweak: " + mi.name + L" (ui theme = " + s.uiTheme + L")");
-            console(L"Note: tweak/mod system is in development; currently supports simple UI theme tweaks.");
-            return 0;
-        }
-        warn(L"This mod does not declare a supported applies= action yet (mod system in development).");
-        console(L"Supported now: applies=ui_theme:white | ui_theme:black | ui_theme:default");
+        auto m = findModByKey(s, args[1]);
+        if (m.path.empty()) { warn(L"mod not found: " + args[1]); return 1; }
+        std::wstring msg;
+        if (applyMod(m, s, msg)) { ok(msg); return 0; }
+        warn(msg);
         return 1;
     }
+
+    if (args[0] == L"publish") {
+        if (args.size() < 2) { warn(L"usage: aegis mod publish <mod> [--strict]"); return 1; }
+        bool strict = true;
+        std::wstring key;
+        for (size_t i=1;i<args.size();++i) {
+            if (args[i]==L"--no-strict") strict = false; else key = args[i];
+        }
+        if (key.empty()) key = args[1];
+        auto m = findModByKey(s, key);
+        if (m.path.empty()) { warn(L"mod not found: " + key); return 1; }
+        console(L"Running automatic publish verification checks...");
+        std::wstring report, summary;
+        bool pass = publishMod(m, strict, report, summary);
+        if (pass) ok(summary); else warn(summary);
+        console(L"If PASS: submit the mod manifest/artifact and report. CI auto-verification workflow should also pass.");
+        return pass ? 0 : 1;
+    }
+
+    if (args[0] == L"open") { openPath(modsDirPath()); return 0; }
+
     warn(L"unknown mod subcommand: " + args[0]);
-    console(L"usage: aegis mod [list|path|create <name>|apply <name|path>]");
+    console(L"usage: aegis mod [list|path|ui|info|verify|enable|disable|create|apply|publish|open]");
+    console(L"  verify: [mod|--all] [--strict]   publish: <mod> (strict auto-checks + report)");
     return 1;
 }
 
@@ -432,9 +576,11 @@ static void printHelp() {
     console(L"  aegis quarantine                 show quarantine contents");
     console(L"  aegis restore [number]           list or restore quarantined files");
     console(L"  aegis export [path]              export quarantine/report (txt; .json for JSON)");
-    console(L"  aegis mod [list|path|create|apply]  mods/tweaks (author tool; in development)");
+    console(L"  aegis mod [list|path|ui|info|verify|enable|disable|create|apply|publish|open]");
+    console(L"                                   mods/tweaks manager + author tools + automatic verification");
     console(L"  aegis update [-y]                check GitHub and update Aegis itself");
     console(L"  aegis autostart on|off           enable/disable automatic background protection at login");
+    console(L"  aegis service status|install|uninstall  background/service helper (uses autostart/daemon, best effort)");
     console(L"  aegis help                       this help");
     console(L"");
     console(L"Commands while watching (CLI mode):");
@@ -738,21 +884,26 @@ static void alertsMenu() {
 static void autostartMenu() {
     while (true) {
         showHeader();
-        console(L"  [ AUTOSTART ]");
+        console(L"  [ AUTOSTART / BACKGROUND SERVICE ]");
         console(L"");
-        console(L"  1. Enable autostart");
-        console(L"  2. Disable autostart");
+        console(L"  User-level background protection (cross-platform best effort):");
+        console(L"  - Installs autostart entry that runs `aegis watch --daemon`");
+        console(L"  - Windows: HKCU Run, Linux: XDG autostart, macOS: LaunchAgent");
+        console(L"");
+        console(L"  1. Enable (install) background protection");
+        console(L"  2. Disable (uninstall) background protection");
+        console(L"  3. Show status");
+        console(L"  4. Start background daemon now (best effort)");
         console(L"  0. Back");
         console(L"");
         prompt(L"  > ");
         std::wstring line; if (!std::getline(std::wcin, line)) return;
         line = trimW(line);
         if (line == L"0" || line.empty()) return;
-        if (line == L"1" || line == L"2") {
-            showHeader(); console(L"  [ AUTOSTART ]"); console(L"");
-            runAutostart(line == L"1" ? L"on" : L"off");
-            waitEnter();
-        }
+        if (line == L"1") { showHeader(); console(L"  [ AUTOSTART / BACKGROUND SERVICE ]"); console(L""); runServiceCommand(L"install"); waitEnter(); }
+        else if (line == L"2") { showHeader(); console(L"  [ AUTOSTART / BACKGROUND SERVICE ]"); console(L""); runServiceCommand(L"uninstall"); waitEnter(); }
+        else if (line == L"3") { showHeader(); console(L"  [ AUTOSTART / BACKGROUND SERVICE ]"); console(L""); runServiceCommand(L"status"); waitEnter(); }
+        else if (line == L"4") { showHeader(); console(L"  [ AUTOSTART / BACKGROUND SERVICE ]"); console(L""); runServiceCommand(L"start"); waitEnter(); }
     }
 }
 
@@ -971,15 +1122,8 @@ static void settingsMenu(Settings& settings) {
                 waitEnter();
             }
         } else if (line == L"12") {
-            showHeader(); console(L"  [ MODS / TWEAKS ] (in development)"); console(L"");
-            std::error_code ec; fs::create_directories(fs::path(modsDir()), ec);
-            console(L"  Mods folder: " + modsDir());
-            console(L"  Use CLI author tools: aegis mod list | path | create <name> | apply <name>");
-            console(L"");
-            auto mods = listMods();
-            if (mods.empty()) console(L"  No mods found. Create one: aegis mod create my-tweak");
-            else for (auto& m : mods) console(L"  - " + m.name + L" [" + m.file + L"] status=" + m.status);
-            waitEnter();
+            modsManagerMenu(settings);
+            settings = loadSettings(); applyUiTheme(settings);
         } else if (line == L"13") {
             showHeader(); console(L"  [ PATHS ]"); console(L"");
             console(L"  Config:     " + configPath());
@@ -1203,12 +1347,13 @@ static int interactiveMenu() {
         console(L"  1. Watch / protect folders");
         console(L"  2. Quarantine (view / restore / delete)");
         console(L"  3. History / stats / search");
-        console(L"  4. Settings (folders, sensitivity, exclusions, ultra-light)");
-        console(L"  5. Diagnostics / check setup");
-        console(L"  6. Recent alerts buffer");
-        console(L"  7. Export report");
-        console(L"  8. Update Aegis");
-        console(L"  9. Autostart");
+        console(L"  4. Settings (sensitivity, folders, exclusions, themes)");
+        console(L"  5. Mods / Tweaks Manager (interface, verify, publish)");
+        console(L"  6. Diagnostics / check setup");
+        console(L"  7. Recent alerts buffer");
+        console(L"  8. Export report");
+        console(L"  9. Update Aegis");
+        console(L" 10. Autostart / background protection");
         console(L"  h. Help");
         console(L"  0. Exit");
         console(L"");
@@ -1221,11 +1366,12 @@ static int interactiveMenu() {
         else if (low == L"2" || low == L"quarantine") { Quarantine q(quarantineRoot()); quarantineMenu(q, nullptr); }
         else if (low == L"3" || low == L"history" || low == L"stats") historyMenu();
         else if (low == L"4" || low == L"settings") settingsMenu(settings);
-        else if (low == L"5" || low == L"diag" || low == L"diagnostics") diagnosticsMenu(settings);
-        else if (low == L"6" || low == L"alerts") alertsMenu();
-        else if (low == L"7" || low == L"export") exportReport();
-        else if (low == L"8" || low == L"update") updateMenu();
-        else if (low == L"9" || low == L"autostart") autostartMenu();
+        else if (low == L"5" || low == L"mods" || low == L"mod") { modsManagerMenu(settings); settings = loadSettings(); applyUiTheme(settings); }
+        else if (low == L"6" || low == L"diag" || low == L"diagnostics") diagnosticsMenu(settings);
+        else if (low == L"7" || low == L"alerts") alertsMenu();
+        else if (low == L"8" || low == L"export") exportReport();
+        else if (low == L"9" || low == L"update") updateMenu();
+        else if (low == L"10" || low == L"autostart" || low == L"background") autostartMenu();
         else if (low == L"h" || low == L"help") helpScreen();
         else if (low == L"0" || low == L"q" || low == L"exit") {
             clearScreen(); banner(); ok(L"Bye!"); return 0;
@@ -1257,8 +1403,10 @@ int main(int argc, char** argv) {
         console(L"Quarantine: " + quarantineRoot() + L" (" + std::to_wstring(q.count()) + L" items)");
         console(L"Watched folders: " + std::to_wstring(effectiveWatchPaths(s).size()));
         console(L"Sensitivity: " + sensitivityName(s.sensitivity) + (s.ultraLight?L" (ultra-light)":L""));
-        console(L"UI theme: " + s.uiTheme + L" (mods/tweaks in development)");
-        console(L"Mods folder: " + modsDir());
+        console(L"UI theme: " + s.uiTheme);
+        console(L"Mods folder: " + modsDirPath());
+        auto allMods = scanMods(s);
+        console(L"Mods: " + std::to_wstring(allMods.size()) + L" installed, " + std::to_wstring(s.disabledMods.size()) + L" disabled");
         console(L"Exclusions: " + std::to_wstring(s.excludePaths.size()) + L" paths, " + std::to_wstring(s.excludeExts.size()) + L" exts");
         return 0;
     }
@@ -1311,6 +1459,11 @@ int main(int argc, char** argv) {
         banner(); args.erase(args.begin());
         if (args.empty()) { warn(L"usage: aegis autostart on|off"); return 1; }
         return runAutostart(args[0]);
+    }
+    if (args[0] == L"service") {
+        banner(); args.erase(args.begin());
+        if (args.empty()) return runServiceCommand(L"status");
+        return runServiceCommand(args[0]);
     }
     if (args[0] == L"restore") {
         banner(); args.erase(args.begin());

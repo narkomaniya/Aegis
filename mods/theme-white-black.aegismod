@@ -1,14 +1,10 @@
-name=UI Theme: White / Black
+name=UI Theme: White
 id=theme-white-black
 author=Aegis
-version=0.1.0
-type=tweak
-status=in-development
-description=Switches Aegis UI log/tag accent theme to white or black (monochrome tweak). In development.
+version=1.0.0
+type=theme
+status=verified
+description=Switches Aegis UI log/tag accent theme to white (bright monochrome tweak). Verified for v5 mod platform.
 applies=ui_theme:white
-
-# Notes (in development)
-# - Change applies= to ui_theme:white, ui_theme:black, or ui_theme:default
-# - Apply with: aegis mod apply theme-white-black
-# - Or use interactive Settings -> UI theme/tweak
-# - Current implementation affects logger tag/accent colors; broader UI theming is planned.
+min_version=v5.0
+homepage=https://github.com/narkomaniya/Aegis

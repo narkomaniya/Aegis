@@ -17,9 +17,11 @@ struct Settings {
     bool autoUpdateCheck = true; // show update notice on interactive start
     bool backupBeforeQuarantine = true; // keep backup copy before moving to quarantine
     std::wstring language = L"en"; // ui language: en, ru (reserved/partial)
-    std::wstring uiTheme = L"default"; // default, white, black (tweaks/mods; in development)
+    std::wstring uiTheme = L"default"; // default, white, black (tweaks/mods)
     std::vector<std::wstring> excludePaths; // exact/prefix paths to ignore
     std::vector<std::wstring> excludeExts;  // extensions like .log
+    std::vector<std::wstring> disabledMods; // mod ids disabled by user
+    bool notifyOnAlerts = true; // best-effort desktop/log notifications (v5)
     bool lastUpdateAvailable = false;
     std::wstring lastUpdateVersion;
 };

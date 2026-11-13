@@ -1,19 +1,27 @@
 # Changelog
 
-## v4.2 — Mods/Tweaks foundation (in development)
+## v5.0 — Mod Platform, Automatic Mod Verification, and Quality Update
 
 ### Added
-- **Mods/tweaks folder:** added `mods/` in the repo and runtime mods directory support at `~/.aegis/mods`.
-- **Author tool (CLI):** `aegis mod list|path|create <name>|apply <name>` to scaffold and manage tweak manifests (in development).
-- **UI theme tweak (in development):** new `ui_theme` setting with `default`, `white`, and `black` accent themes for logger/status tags; configurable in Settings and via tweak manifests.
-- **Example tweaks:** included `mods/theme-white-black.aegismod` (white) and `mods/theme-white-black-black.aegismod` (black), marked **in development**.
+- **Mods/Tweaks Manager UI:** new interactive interface in the main menu and settings (`Mods / Tweaks Manager`) to browse installed mods, view details, enable/disable, apply, verify, publish, and open the mods folder.
+- **Full mod CLI workflow:** `aegis mod list|path|ui|info|verify|enable|disable|create|apply|publish|open` for authors and users.
+- **Automatic mod verification:** manifest validation with required-field checks, id/version format checks, file-size/safety-pattern checks, and supported-apply checks.
+  - `aegis mod verify <mod>` / `--all` / `--strict` for local automatic checks
+  - `aegis mod publish <mod>` runs **strict automatic verification**, generates a publish report and artifact in `~/.aegis/mods-publish/` (submission-ready flow)
+- **CI auto-verification for published/submitted mods:** new GitHub Actions workflow `.github/workflows/mod-verify.yml` that builds Aegis and runs strict automatic mod verification on mod-related changes/PRs.
+- **Mod state management:** enable/disable mods persisted in config (`mod_disabled=...`), richer manifest fields (`author`, `description`, `min_version`, `homepage`, etc.), and improved mod discovery.
+- **Self-update integrity verification:** updater now downloads `SHA256SUMS.txt` and verifies the downloaded release asset hash before install (aborts on mismatch / missing computed hash when checksum entry is present).
+- **Background/service helper commands:** `aegis service status|install|uninstall|start|stop` (best-effort, user-level) built on autostart + daemon background protection across platforms.
+- **Quality/UI improvements:** updated menus/help/status for mod platform and background service controls; clearer background protection messaging.
 
-### Changed
-- **Settings UI/paths:** added UI theme/tweak and Mods/tweaks entries, and mods path display.
-- **Status/CLI:** `aegis status` and help now include mod/theme information.
+### Included mods/tweaks
+- `mods/theme-white-black.aegismod` — UI theme tweak (white)
+- `mods/theme-white-black-black.aegismod` — UI theme tweak (black)
+- Both can be verified/applied via the Mod Manager or `aegis mod verify/apply ...`
 
 ### Notes
-- The mod/tweak system is an early foundation. Manifest format and author tooling are available now; broader runtime mod loading/hooks are still **in development**.
+- Mod runtime actions are currently focused on safe, supported tweaks (e.g. UI theme) with strong manifest verification and publish checks. The platform/API is designed for expansion (more hooks and mod capabilities can be added on top of this foundation).
+- `service` commands provide cross-platform best-effort user-level background management (autostart + daemon). Native system service integration (Windows Service/systemd unit) can be layered on further where elevated privileges/environments are available.
 
 ## v4.1 — Automatic background protection (hands-off)
 

@@ -115,6 +115,12 @@ Settings loadSettings() {
         } else if (line.rfind("ui_theme=", 0) == 0) {
             s.uiTheme = utf8ToW(line.substr(9));
             if (s.uiTheme.empty()) s.uiTheme = L"default";
+        } else if (line.rfind("mod_disabled=", 0) == 0) {
+            std::wstring w = utf8ToW(line.substr(13));
+            if (!w.empty()) s.disabledMods.push_back(w);
+        } else if (line.rfind("notify_alerts=", 0) == 0) {
+            std::string v = line.substr(14);
+            s.notifyOnAlerts = !(v == "0" || v == "false" || v == "off");
         } else if (line.rfind("exclude_path=", 0) == 0) {
             std::wstring w = utf8ToW(line.substr(13));
             if (!w.empty()) s.excludePaths.push_back(w);
@@ -157,6 +163,8 @@ bool saveSettings(const Settings& s) {
     f << "backup_before_quarantine=" << (s.backupBeforeQuarantine ? "1" : "0") << "\n";
     f << "language=" << wToUtf8(s.language.empty()?L"en":s.language) << "\n";
     f << "ui_theme=" << wToUtf8(s.uiTheme.empty()?L"default":s.uiTheme) << "\n";
+    f << "notify_alerts=" << (s.notifyOnAlerts ? "1" : "0") << "\n";
+    for (const auto& d : s.disabledMods) f << "mod_disabled=" << wToUtf8(d) << "\n";
     f << "last_update_available=" << (s.lastUpdateAvailable ? "1" : "0") << "\n";
     if (!s.lastUpdateVersion.empty())
         f << "last_update_version=" << wToUtf8(s.lastUpdateVersion) << "\n";

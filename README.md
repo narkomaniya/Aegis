@@ -2,7 +2,7 @@
 
 **Aegis** is a cross-platform guardian for your files. It watches your folders (Desktop, Documents, Downloads by default, or any folders you choose), detects ransomware-like behavior, and moves dangerous files into quarantine before they can be encrypted or destroyed.
 
-**Version:** v4.2 — mods/tweaks foundation and UI color theme tweaks (white/black, in development)  
+**Version:** v5.0 — Mod Platform (UI + author tools), automatic mod verification on publish/CI, and quality updates  
 **Author:** by narkomaniya
 
 ```
@@ -67,11 +67,11 @@ Aegis combines real-time filesystem monitoring with behavior-based heuristics to
 - Configure watched folders and per-folder sensitivity
 - **Export/import settings** (copy config file)
 - **Language setting (EN/RU foundation)** for UI evolution
-- **UI theme tweaks (in development):** switch log/accent theme to `white` or `black` (or default) in Settings / via mods
-- **Mods/tweaks (in development):** `mods/` folder + runtime `~/.aegis/mods`, author tool `aegis mod create ...`, example color tweak included
-- **Auto-update check on start** (quiet menu notice) + manual `aegis update`
-- **Hands-off autostart:** `aegis autostart on|off` starts background protection automatically at login (`watch --daemon`) via HKCU Run / XDG autostart / LaunchAgent (with KeepAlive on macOS)
-- **Daemon/non-interactive watch mode:** `aegis watch --daemon` (hidden console on Windows) plus CLI `status`/`export` for automation and service-friendly use
+- **UI theme tweaks:** `default` / `white` / `black` (configurable in Settings or via mods)
+- **Mods/Tweaks Manager (v5):** interactive UI + CLI to list, inspect, enable/disable, verify, apply, and publish mods
+- **Automatic mod verification:** `aegis mod verify` and strict `aegis mod publish` checks; CI workflow auto-verifies mod submissions/changes
+- **Auto-update check on start** (quiet menu notice) + manual `aegis update` with SHA256 integrity verification when release checksums are available
+- **Hands-off background protection:** `aegis autostart` / `aegis service` helpers (user-level, best effort) run `aegis watch --daemon` automatically at login (HKCU Run / XDG autostart / LaunchAgent with KeepAlive on macOS)
 
 ### Low footprint
 - Small sampling windows (8 KiB entropy, 16 KiB content), bounded bookkeeping, periodic working-set trimming (Windows), ultra-light mode option
@@ -101,14 +101,17 @@ g++ -std=c++17 -O2 -Wall src\*.cpp -o build\aegis.exe -lshell32 -lole32 -luuid
 aegis                         # interactive menu (recommended)
 aegis watch [dir1 dir2 ...]   # watch folders (saved/custom or specified)
 aegis watch --daemon [...]    # non-interactive watch mode (service-friendly)
-aegis status                  # quick health/status summary
-aegis quarantine              # show quarantine contents
-aegis restore [number]        # list or restore quarantined files
-aegis export [path] [--json]  # export quarantine/report (txt or json)
-aegis mod [list|path|create|apply]  # mods/tweaks author tools (in development)
-aegis update [-y]             # self-update from GitHub Releases
-aegis autostart on|off        # enable/disable autostart
-aegis help                    # help
+aegis status                     # quick health/status summary
+aegis quarantine                 # show quarantine contents
+aegis restore [number]           # list or restore quarantined files
+aegis export [path] [--json]     # export quarantine/report (txt or json)
+aegis mod [list|path|ui|info|verify|enable|disable|create|apply|publish|open]
+                                 # mods/tweaks manager, author tools, automatic verification
+aegis update [-y]                # self-update from GitHub Releases (SHA256 verified when checksums available)
+aegis autostart on|off           # enable/disable automatic background protection at login
+aegis service status|install|uninstall|start|stop
+                                 # background/service helper (best effort)
+aegis help                       # help
 ```
 
 ### Interactive menu
@@ -149,16 +152,18 @@ Detection is heuristic/behavioral. To reduce false positives:
 
 GitHub Actions builds and smoke-tests on Windows, Linux, and macOS. On version tags (`v*`), CI publishes a GitHub Release with platform binaries (`aegis.exe`, `aegis-linux`, `aegis-macos`) and `SHA256SUMS.txt`.
 
-## Mods / Tweaks (in development)
+## Mods / Tweaks (v5 platform)
 
-- Repo `mods/` folder and runtime `~/.aegis/mods` are available for tweaks.
-- Author tool: `aegis mod list|path|create <name>|apply <name|path>`.
-- Included example: **UI color/theme tweak (white/black)** — **in development** (`mods/theme-white-black.aegismod`, `mods/theme-white-black-black.aegismod`).
-- Broader mod runtime/hooks are planned.
+- **Locations:** repo `mods/` and runtime `~/.aegis/mods`
+- **Interface:** interactive **Mods/Tweaks Manager** in app + CLI (`aegis mod ui|list|info|verify|enable|disable|create|apply|publish|open`)
+- **Author workflow:** scaffold with `aegis mod create <name>`, edit manifest, run `aegis mod verify <name>` and `aegis mod publish <name>`
+- **Automatic verification (on publish):** strict checks validate manifest fields/format, supported apply actions, size and basic safety patterns, and generate a publish report/artifact in `~/.aegis/mods-publish/`
+- **Automatic verification (CI):** `.github/workflows/mod-verify.yml` runs strict mod verification for mod-related changes/PRs
+- **Examples included:** `mods/theme-white-black.aegismod` (white) and `mods/theme-white-black-black.aegismod` (black)
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md) for release notes (including v4.2 mods/tweaks foundation).
+See [CHANGELOG.md](CHANGELOG.md) for full release notes (v5.0 and earlier).
 
 ## About
 
