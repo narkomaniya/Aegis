@@ -111,6 +111,7 @@ static void banner() {
     console(L"");
     console(std::wstring(L"    --- file guardian | ") + ae::kVersion +
             L" (" + platform + L") | c++17 ---");
+    console(L"                      by drug addict");
     console(L"");
 }
 
