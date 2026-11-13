@@ -2,7 +2,7 @@
 
 **Aegis** is a cross-platform guardian for your files. It watches your folders (Desktop, Documents, Downloads by default, or any folders you choose), detects ransomware-like behavior, and moves dangerous files into quarantine before they can be encrypted or destroyed.
 
-**Version:** v4.0 — the biggest Aegis update so far (major stability, detection, UX, and performance overhaul)  
+**Version:** v4.1 — automatic background protection (autostart runs in daemon mode, no babysitting required)  
 **Author:** by narkomaniya
 
 ```
@@ -68,8 +68,8 @@ Aegis combines real-time filesystem monitoring with behavior-based heuristics to
 - **Export/import settings** (copy config file)
 - **Language setting (EN/RU foundation)** for UI evolution
 - **Auto-update check on start** (quiet menu notice) + manual `aegis update`
-- **Autostart:** `aegis autostart on|off` (HKCU Run / XDG autostart / LaunchAgent)
-- **Daemon/non-interactive watch mode** and CLI `status`/`export` for automation and service-friendly use
+- **Hands-off autostart:** `aegis autostart on|off` starts background protection automatically at login (`watch --daemon`) via HKCU Run / XDG autostart / LaunchAgent (with KeepAlive on macOS)
+- **Daemon/non-interactive watch mode:** `aegis watch --daemon` (hidden console on Windows) plus CLI `status`/`export` for automation and service-friendly use
 
 ### Low footprint
 - Small sampling windows (8 KiB entropy, 16 KiB content), bounded bookkeeping, periodic working-set trimming (Windows), ultra-light mode option

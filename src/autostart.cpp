@@ -54,9 +54,10 @@ int runAutostart(const std::wstring& mode) {
         return 0;
     }
 
-    const std::wstring quoted = L"\"" + self + L"\"";
-    const BYTE* data = reinterpret_cast<const BYTE*>(quoted.c_str());
-    DWORD bytes = (DWORD)((quoted.size() + 1) * sizeof(wchar_t));
+    // Start protection automatically in background (no interactive console needed)
+    const std::wstring cmd = L"\"" + self + L"\" watch --daemon";
+    const BYTE* data = reinterpret_cast<const BYTE*>(cmd.c_str());
+    DWORD bytes = (DWORD)((cmd.size() + 1) * sizeof(wchar_t));
     LSTATUS rc = RegSetValueExW(hKey, kRegValue, 0, REG_SZ, data, bytes);
     RegCloseKey(hKey);
     if (rc != ERROR_SUCCESS) { warn(L"cannot write HKCU Run key"); return 1; }
@@ -98,6 +99,7 @@ int runAutostart(const std::wstring& mode) {
     std::error_code ec;
     fs::create_directories(plist.parent_path(), ec);
 
+    std::string narrow = fs::path(self).string();   // широкий путь -> родной narrow (UTF-8 на POSIX)
     std::string body =
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
         "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\""
@@ -105,13 +107,12 @@ int runAutostart(const std::wstring& mode) {
         "<plist version=\"1.0\">\n<dict>\n"
         "  <key>Label</key>\n  <string>com.aegis.guardian</string>\n"
         "  <key>ProgramArguments</key>\n  <array>\n"
-        "    <string>";
-
-    std::string narrow = fs::path(self).string();   // широкий путь -> родной narrow (UTF-8 на POSIX)
-    body += narrow;
-    body +=
-        "</string>\n  </array>\n"
+        "    <string>" + narrow + "</string>\n"
+        "    <string>watch</string>\n"
+        "    <string>--daemon</string>\n"
+        "  </array>\n"
         "  <key>RunAtLoad</key>\n  <true/>\n"
+        "  <key>KeepAlive</key>\n  <true/>\n"
         "</dict>\n</plist>\n";
 
     std::ofstream f(plist, std::ios::binary | std::ios::trunc);
@@ -149,16 +150,14 @@ int runAutostart(const std::wstring& mode) {
     std::error_code ec;
     fs::create_directories(desktop.parent_path(), ec);
 
+    std::string narrow = fs::path(self).string();
     std::string body =
         "[Desktop Entry]\n"
         "Type=Application\n"
         "Name=Aegis\n"
         "Comment=Anti-ransomware file guardian\n"
-        "Exec=";
-    std::string narrow = fs::path(self).string();
-    body += "\"" + narrow + "\"";                   // кавычки на случай пробелов в пути
-    body +=
-        "\nX-GNOME-Autostart-enabled=true\n"
+        "Exec=\"" + narrow + "\" watch --daemon\n"
+        "X-GNOME-Autostart-enabled=true\n"
         "Terminal=false\n";
 
     std::ofstream f(desktop, std::ios::binary | std::ios::trunc);

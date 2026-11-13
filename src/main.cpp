@@ -288,7 +288,7 @@ static void printHelp() {
     console(L"  aegis restore [number]           list or restore quarantined files");
     console(L"  aegis export [path]              export quarantine/report (txt; .json for JSON)");
     console(L"  aegis update [-y]                check GitHub and update Aegis itself");
-    console(L"  aegis autostart on|off           start Aegis automatically with the system");
+    console(L"  aegis autostart on|off           enable/disable automatic background protection at login");
     console(L"  aegis help                       this help");
     console(L"");
     console(L"Commands while watching (CLI mode):");
@@ -491,16 +491,7 @@ static std::string to8(const std::wstring& w){
     return s;
 }
 
-static std::string jsonEsc(const std::string& in){
-    std::string o; o.reserve(in.size()+8);
-    for(char c: in){
-        switch(c){
-            case '\\': o+="\\\\\\"; break; // will fix below
-            default: o+=c; break;
-        }
-    }
-    return o;
-}
+// (reserved for future report escaping helpers)
 
 static int exportReportTo(const std::wstring& pathW, bool json) {
     Quarantine q(quarantineRoot());
@@ -1108,7 +1099,7 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (args[0] == L"watch") {
-        banner(); args.erase(args.begin());
+        args.erase(args.begin());
         Settings s = loadSettings();
         bool daemon = false;
         std::vector<std::wstring> dirs;
@@ -1116,6 +1107,14 @@ int main(int argc, char** argv) {
             if (a == L"--daemon" || a == L"-d") daemon = true;
             else dirs.push_back(a);
         }
+#ifdef _WIN32
+        if (daemon) {
+            // Hide console for background protection (autostart/service-like usage)
+            HWND hw = GetConsoleWindow();
+            if (hw) ShowWindow(hw, SW_HIDE);
+        }
+#endif
+        if (!daemon) banner();
         if (dirs.empty()) return runWatch(s, false, {}, daemon);
         return runWatch(s, false, dirs, daemon);
     }

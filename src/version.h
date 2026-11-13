@@ -2,6 +2,6 @@
 // version.h — единая точка версии: баннер, self-update-сравнение.
 namespace ae {
 
-constexpr const wchar_t* kVersion = L"v4.0";
+constexpr const wchar_t* kVersion = L"v4.1";
 
 } // namespace ae

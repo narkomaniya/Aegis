@@ -1,5 +1,19 @@
 # Changelog
 
+## v4.1 — Automatic background protection (hands-off)
+
+### Added
+- **True background autostart:** enabling autostart now launches `aegis watch --daemon` automatically at login/startup, so protection runs without opening the interactive menu.
+- **macOS LaunchAgent keep-alive:** autostart agent now includes `KeepAlive` to help keep the watcher running.
+- **Windows hidden daemon mode:** `aegis watch --daemon` hides the console window for quiet background protection.
+
+### Changed
+- **Autostart entries updated across platforms:** Windows HKCU Run, Linux XDG autostart `.desktop`, and macOS LaunchAgent now start in daemon mode.
+- **Daemon watch flow:** daemon mode skips interactive banner/loop and runs as a non-interactive watcher process (logging to `~/.aegis/aegis.log`).
+
+### Notes
+- To use the new hands-off behavior, toggle autostart off/on once (`aegis autostart off` then `aegis autostart on`) so the saved startup entry is refreshed.
+
 ## v4.0 — Biggest update (major stability, detection, UX and performance overhaul)
 
 ### Added
