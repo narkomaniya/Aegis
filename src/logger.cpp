@@ -23,6 +23,8 @@ namespace ae {
 static const bool kIsTty = _isatty(_fileno(stdout)) != 0;
 #endif
 
+static std::mutex g_consoleMutex;
+
 // убрать ANSI-цвета для небычного вывода (труба, файл)
 static std::wstring stripColors(const std::wstring& s) {
     std::wstring out;
@@ -87,6 +89,7 @@ static std::wstring centerLine(const std::wstring& line) {
 
 // Единая точка вывода: консоль понимает русский+цвета, труба — обычные байты
 static void emit(const std::wstring& line, bool newline) {
+    std::lock_guard<std::mutex> lock(g_consoleMutex);
     const std::wstring out = centerLine(line);
 #ifdef _WIN32
     if (kIsTty) {

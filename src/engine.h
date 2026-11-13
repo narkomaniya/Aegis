@@ -29,8 +29,11 @@ public:
     // Обработать одно событие (вызывается из потоков Watcher).
     void onEvent(const FileEvent& e);
 
+    void setSensitivity(int s) { sensitivity_ = s; } // 0 low, 1 medium, 2 high
+
     unsigned long long quarantinedCount() const { return quarantined_; }
     unsigned long long alertCount() const { return alerts_; }
+    unsigned long long eventCount() const { return events_; }
     bool emergencyActive() const;
 
     // Не трогать этот путь (файл только что вернули из карантина через restore)
@@ -61,6 +64,7 @@ private:
     std::chrono::steady_clock::time_point emergencyUntil_{};
     unsigned long long quarantined_ = 0;
     unsigned long long alerts_ = 0;
+    int sensitivity_ = 1; // 0 low, 1 medium, 2 high
 };
 
 } // namespace ae

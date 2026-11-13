@@ -204,7 +204,8 @@ static bool isIgnoredName(const std::wstring& name) {
     static const wchar_t* kExt[] = {
         L".tmp", L".temp", L".part", L".crdownload", L".partial",
         L".swp", L".swo", L".swx", L".bak", L".lnk",
-        L".etl",
+        L".etl", L".opdownload", L".download",
+        L".db-wal", L".db-shm", L".journal",
     };
     for (const wchar_t* e : kExt) if (ext == e) return true;
 
@@ -288,10 +289,12 @@ void Engine::checkRate() {
             emergency_ = false;
         return;
     }
-    if (rate_.size() > 150) {  // >150 changes per second — no human works this fast
+    size_t limit = 150;
+    if (sensitivity_ <= 0) limit = 220;      // low: fewer false positives
+    else if (sensitivity_ >= 2) limit = 90;  // high: catch faster
+    if (rate_.size() > limit) {
         raiseEmergencyLocked(alerts_, emergency_, emergencyUntil_,
-                             L"EMERGENCY: mass file changes (>150/sec) — "
-                             L"looks like a ransomware attack!");
+                             L"EMERGENCY: mass file changes — looks like a ransomware attack!");
         ae::warn(L"new files will be copied to quarantine for 30 seconds");
     }
 }
@@ -299,11 +302,12 @@ void Engine::checkRate() {
 void Engine::checkRenames() {
     if (emergency_) return;   // already in emergency — no duplicate alarm
     // Ransomware renames victims in bulk: file.txt -> file.txt.<their-ext>.
-    // No human renames >15 files per second.
-    if (renames_.size() > 15) {
+    size_t limit = 15;
+    if (sensitivity_ <= 0) limit = 25;
+    else if (sensitivity_ >= 2) limit = 8;
+    if (renames_.size() > limit) {
         raiseEmergencyLocked(alerts_, emergency_, emergencyUntil_,
-                             L"ANOMALY: mass rename burst (>15/sec) — "
-                             L"typical ransomware behavior (files are renamed during encryption)");
+                             L"ANOMALY: mass rename burst — typical ransomware behavior (files renamed during encryption)");
         ae::warn(L"new files will be copied to quarantine for 30 seconds");
     }
 }
@@ -502,9 +506,14 @@ void Engine::onEvent(const FileEvent& e) {
                              sizeof(kCompressedExt) / sizeof(wchar_t*));
     if (!compressed &&
         (e.action == EventAction::Created || e.action == EventAction::Modified)) {
-        // Created: мягче (только появился). Modified: строже — меньше ложных
-        // срабатываний на обычные сохранения редакторов/приложений.
-        double threshold = (e.action == EventAction::Created) ? 7.5 : 7.85;
+        // Thresholds depend on sensitivity (low = fewer FPs, high = more aggressive)
+        double tCreated = 7.5, tModified = 7.85;
+        {
+            std::lock_guard<std::mutex> lock(m_);
+            if (sensitivity_ <= 0) { tCreated = 7.7; tModified = 7.92; }
+            else if (sensitivity_ >= 2) { tCreated = 7.3; tModified = 7.7; }
+        }
+        double threshold = (e.action == EventAction::Created) ? tCreated : tModified;
         double H = sampleEntropy(full);
         if (H >= threshold) {
             wchar_t buf[16];

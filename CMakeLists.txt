@@ -13,6 +13,7 @@ add_executable(aegis
     src/attribution.cpp
     src/updater.cpp
     src/autostart.cpp
+    src/config.cpp
 )
 
 if(WIN32)
