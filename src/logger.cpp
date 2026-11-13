@@ -56,35 +56,10 @@ static std::string toAnsi(const std::wstring& w) {
 }
 #endif
 
-// ширина терминала (для центрирования интерфейса)
-static int termWidth() {
-#ifdef _WIN32
-    CONSOLE_SCREEN_BUFFER_INFO info{};
-    HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
-    if (GetConsoleScreenBufferInfo(h, &info) && info.dwSize.X > 0)
-        return (int)info.dwSize.X;
-    return 80;
-#else
-    struct winsize ws{};
-    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0)
-        return (int)ws.ws_col;
-    if (const char* c = std::getenv("COLUMNS")) {
-        int v = std::atoi(c);
-        if (v > 0) return v;
-    }
-    return 80;
-#endif
-}
-
-// центрирование строки по ширине терминала (ANSI-цвета в ширину не считаем)
+// Центрирование отключено для общего вывода (ломает выравнивание меню/логов).
+// Баннер и layout задаются пробелами в самих строках.
 static std::wstring centerLine(const std::wstring& line) {
-    const std::wstring visible = stripColors(line);
-    const int w = termWidth();
-    const int len = (int)visible.size();
-    if (len >= w) return line;                  // строка шире терминала — как есть
-    std::wstring out((size_t)((w - len) / 2), L' ');
-    out += line;
-    return out;
+    return line;
 }
 
 // Единая точка вывода: консоль понимает русский+цвета, труба — обычные байты
