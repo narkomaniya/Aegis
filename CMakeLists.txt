@@ -14,6 +14,7 @@ add_executable(aegis
     src/updater.cpp
     src/autostart.cpp
     src/config.cpp
+    src/mods.cpp
 )
 
 if(WIN32)
