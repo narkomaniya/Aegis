@@ -192,12 +192,12 @@ int runServiceCommand(const std::wstring& action) {
     if (action == L"uninstall" || action == L"disable") return runAutostart(L"off");
     if (action == L"start") {
         console(L"Best-effort start: load LaunchAgent with launchctl if available, or run `aegis watch --daemon` manually.");
-        console(L"Try: launchctl bootstrap gui/$UID " + fs::path(agentPath()).string());
+        console(L"Try: launchctl bootstrap gui/$UID " + fs::path(agentPath()).wstring());
         return 0;
     }
     if (action == L"stop") {
         console(L"Best-effort stop: unload LaunchAgent via launchctl or stop daemon process.");
-        console(L"Try: launchctl bootout gui/$UID " + fs::path(agentPath()).string());
+        console(L"Try: launchctl bootout gui/$UID " + fs::path(agentPath()).wstring());
         return 0;
     }
     warn(L"usage: aegis service status|install|uninstall|start|stop");
