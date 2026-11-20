@@ -19,7 +19,9 @@ $job = Start-Job -ScriptBlock {
     Set-Content -Path "$d\homework.txt" -Value 'homework'
 } -ArgumentList $dir
 
-cmd /c "(ping -n 10 127.0.0.1 >nul & echo quarantine & echo q) | build\aegis.exe watch `"$dir`""
+# loopback ping can finish in well under a second, so the `q` used to arrive
+# before the job had even created the malicious files. Sleep a real 10 seconds.
+cmd /c "(powershell -NoProfile -Command Start-Sleep -Seconds 10 & echo quarantine & echo q) | build\aegis.exe watch `"$dir`""
 
 Receive-Job -Wait $job | Out-Null
 "=== testdata after test ==="

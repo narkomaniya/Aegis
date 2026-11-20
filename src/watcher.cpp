@@ -17,12 +17,19 @@
 #elif defined(__APPLE__)
 #include <CoreServices/CoreServices.h>
 #include <CoreFoundation/CoreFoundation.h>
+#include <chrono>
+#include <cstring>
 #include <locale>
 #include <codecvt>
+#include <thread>
 #else
 #include <sys/inotify.h>
 #include <sys/stat.h>
+#include <poll.h>
+#include <fcntl.h>
 #include <unistd.h>
+#include <cerrno>
+#include <chrono>
 #include <cstring>
 #endif
 
@@ -41,10 +48,26 @@ bool Watcher::add(const std::wstring& dir) {
 void Watcher::start() {
     running_ = true;
 #ifdef _WIN32
+    // Один общий manual-reset event: stop() взводит его, все потоки просыпаются.
+    {
+        HANDLE ev = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        stopEvent_ = ev;
+    }
     for (int i = 0; i < (int)dirs_.size(); ++i)
         threads_.emplace_back(&Watcher::loop, this, i);
 #else
     // macOS/Linux: единый поток на все добавленные папки
+#if !defined(__APPLE__)
+    {
+        std::lock_guard<std::mutex> lock(wakeMu_);
+        if (wakeFd_[0] < 0 && pipe(wakeFd_) == 0) {
+            for (int i = 0; i < 2; ++i) {
+                int fl = fcntl(wakeFd_[i], F_GETFL, 0);
+                if (fl >= 0) fcntl(wakeFd_[i], F_SETFL, fl | O_NONBLOCK);
+            }
+        }
+    }
+#endif
     if (!dirs_.empty())
         threads_.emplace_back(&Watcher::loop, this, 0);
 #endif
@@ -52,23 +75,49 @@ void Watcher::start() {
 
 void Watcher::stop() {
     running_ = false;
-#ifdef __APPLE__
-    CFRunLoopRef rl = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(supMu_);
-        rl = runloop_;
+#ifdef _WIN32
+    if (stopEvent_) SetEvent(static_cast<HANDLE>(stopEvent_));
+#elif defined(__APPLE__)
+    // CFRunLoopStop потокобезопасен. runloop_ может ещё не быть установлен —
+    // подождём немного, чтобы не пропустить старт цикла.
+    for (int i = 0; i < 300; ++i) {
+        CFRunLoopRef rl = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(supMu_);
+            rl = runloop_;
+        }
+        if (rl) { CFRunLoopStop(rl); break; }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
-    // CFRunLoopStop потокобезопасен: будим поток наблюдения,
-    // он сам корректно остановит и удалит свой stream.
-    if (rl) CFRunLoopStop(rl);
+#else
+    {
+        std::lock_guard<std::mutex> lock(wakeMu_);
+        if (wakeFd_[1] >= 0) {
+            char b = 1;
+            ssize_t ignored = write(wakeFd_[1], &b, 1);
+            (void)ignored;
+        }
+    }
 #endif
-    // Потоки уходят из блокирующего системного вызова только вместе
-    // с процессом, поэтому detach — иначе деструктор std::thread вызовет
-    // std::terminate в момент завершения main().
+    // Дожидаемся потоков: они больше не вызовут cb_ после возврата из stop().
     for (auto& t : threads_) {
-        if (t.joinable()) t.detach();
+        if (t.joinable()) t.join();
     }
     threads_.clear();
+#ifdef _WIN32
+    if (stopEvent_) {
+        CloseHandle(static_cast<HANDLE>(stopEvent_));
+        stopEvent_ = nullptr;
+    }
+#elif !defined(__APPLE__)
+    {
+        std::lock_guard<std::mutex> lock(wakeMu_);
+        for (int i = 0; i < 2; ++i) {
+            if (wakeFd_[i] >= 0) close(wakeFd_[i]);
+            wakeFd_[i] = -1;
+        }
+    }
+#endif
 }
 
 #ifdef _WIN32
@@ -84,7 +133,7 @@ void Watcher::loop(int index) {
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         nullptr,
         OPEN_EXISTING,
-        FILE_FLAG_BACKUP_SEMANTICS,   // открываем папку как дескриптор
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,  // папка + асинхронный I/O
         nullptr);
 
     if (h == INVALID_HANDLE_VALUE) {
@@ -97,21 +146,75 @@ void Watcher::loop(int index) {
 
     constexpr DWORD BUF = 64 * 1024;
     std::vector<BYTE> buf(BUF);
-    DWORD bytes = 0;
     std::wstring pendingOld;
 
+    HANDLE stopEv = static_cast<HANDLE>(stopEvent_);
+
     while (running_) {
-        if (!ReadDirectoryChangesW(
-                h, buf.data(), BUF,
-                TRUE,  // рекурсивно, включая подпапки
-                FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE |
-                    FILE_NOTIFY_CHANGE_SIZE,
-                &bytes, nullptr, nullptr))
+        // Асинхронное чтение + ожидание на двух объектах: так stop() может
+        // разбудить поток, а не оставлять его навсегда в блокирующем вызове.
+        OVERLAPPED ov{};
+        ov.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        if (!ov.hEvent) break;
+
+        BOOL started = ReadDirectoryChangesW(
+            h, buf.data(), BUF,
+            TRUE,  // рекурсивно, включая подпапки
+            FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE |
+                FILE_NOTIFY_CHANGE_SIZE,
+            nullptr, &ov, nullptr);
+
+        if (!started) {
+            DWORD err = GetLastError();
+            // ERROR_IO_PENDING — нормальный асинхронный запуск, не ошибка.
+            if (err == ERROR_IO_PENDING) started = TRUE;
+            else {
+                CloseHandle(ov.hEvent);
+                if (!running_ || err == ERROR_OPERATION_ABORTED) break;
+                ae::warn(L"watch failed: " + dir + L" (code " + std::to_wstring(err) +
+                         L"), retrying");
+                Sleep(500);
+                continue;
+            }
+        }
+
+        HANDLE waits[2] = {ov.hEvent, stopEv};
+        DWORD wr = WaitForMultipleObjects(stopEv ? 2 : 1, waits, FALSE, INFINITE);
+
+        if (wr == WAIT_OBJECT_0 + 1) {
+            // stop(): отменяем I/O и ждём, пока буфер перестанет использоваться
+            CancelIoEx(h, &ov);
+            WaitForSingleObject(ov.hEvent, 5000);
+            CloseHandle(ov.hEvent);
             break;
+        }
+
+        DWORD bytes = 0;
+        BOOL got = GetOverlappedResult(h, &ov, &bytes, FALSE);
+        DWORD gerr = got ? 0 : GetLastError();
+        CloseHandle(ov.hEvent);
+
+        if (!got) {
+            if (!running_ || gerr == ERROR_OPERATION_ABORTED) break;
+            ae::warn(L"watch read failed: " + dir + L" (code " +
+                     std::to_wstring(gerr) + L"), retrying");
+            Sleep(500);
+            continue;
+        }
+
+        // bytes == 0: буфер переполнен, часть событий ОС потеряла — старые
+        // данные в buf разбирать нельзя.
+        if (bytes == 0) continue;
 
         BYTE* p = buf.data();
-        for (;;) {
+        BYTE* end = p + bytes;
+
+        while (p + sizeof(FILE_NOTIFY_INFORMATION) <= end) {
             auto* fni = reinterpret_cast<FILE_NOTIFY_INFORMATION*>(p);
+            BYTE* nameBegin = reinterpret_cast<BYTE*>(fni->FileName);
+            if (nameBegin > end || fni->FileNameLength > (size_t)(end - nameBegin))
+                break;   // повреждённая/устаревшая запись
+
             std::wstring name(fni->FileName, fni->FileNameLength / sizeof(WCHAR));
 
             FileEvent ev;
@@ -135,10 +238,13 @@ void Watcher::loop(int index) {
                     break;  // неизвестное действие — пропускаем
             }
 
-            if (fni->Action != FILE_ACTION_RENAMED_OLD_NAME)
+            if (fni->Action != FILE_ACTION_RENAMED_OLD_NAME) {
+                if (!running_) break;
                 cb_(ev);
+            }
 
             if (fni->NextEntryOffset == 0) break;
+            if (fni->NextEntryOffset > (size_t)(end - p)) break;
             p += fni->NextEntryOffset;
         }
     }
@@ -194,6 +300,9 @@ void Watcher::fsEventsCallback(ConstFSEventStreamRef /*stream*/,
         std::string utf8((size_t)maxLen + 1, '\0');
         if (!CFStringGetFileSystemRepresentation(cf, utf8.data(), utf8.size()))
             continue;
+        // буфер больше реальной длины: обрезаем хвост из NUL-байтов,
+        // иначе к имени файла прилипают '\0' и все сравнения расширений ломаются
+        utf8.resize(std::strlen(utf8.c_str()));
 
         fs::path full(fromUtf8(utf8));
 
@@ -240,7 +349,8 @@ void Watcher::loop(int /*index*/) {
         /*latency*/ 0.05,   // почти живое время, без дожидания "окна" (0.3 с)
         kFSEventStreamCreateFlagFileEvents | // даёт флаги ItemCreated/Modified/…
         kFSEventStreamCreateFlagNoDefer |    // события сразу, а не на следующем после "долгого" события
-        kFSEventStreamCreateFlagWatchRoot);  // рекурсивно + ловить переименование корня
+        kFSEventStreamCreateFlagWatchRoot |  // рекурсивно + ловить переименование корня
+        kFSEventStreamCreateFlagUseCFTypes); // eventPaths — CFArray, а не char**
 
     if (!stream) {
         ae::warn(L"FSEvents: FSEventStreamCreate failed");
@@ -269,6 +379,19 @@ void Watcher::loop(int /*index*/) {
 
     for (const auto& d : dirs_)
         ae::info(L"watching (FSEvents): " + d);
+
+    if (!running_) {
+        // stop() успел раньше, чем мы вошли в цикл
+        FSEventStreamStop(stream);
+        FSEventStreamInvalidate(stream);
+        FSEventStreamRelease(stream);
+        {
+            std::lock_guard<std::mutex> lock(supMu_);
+            runloop_ = nullptr;  stream_ = nullptr;
+        }
+        CFRelease(paths);
+        return;
+    }
 
     CFRunLoopRun();  // блокируемся, пока stop() не сделает CFRunLoopStop
 
@@ -327,23 +450,72 @@ void Watcher::loop(int index) {
     }
 
     // подставки под событие MOVED_FROM -> MOVED_TO (как RENAMED_OLD/NEW)
-    std::map<unsigned, FileEvent> pending;  // cookie -> событие
+    // cookie -> (событие, время прихода): пары может не быть (файл уехал
+    // за пределы наблюдаемого дерева), тогда по таймауту отдаём Deleted.
+    struct PendingMove {
+        FileEvent ev;
+        std::chrono::steady_clock::time_point at;
+    };
+    std::map<unsigned, PendingMove> pending;
 
     constexpr size_t BUF = 64 * 1024;
     std::vector<char> buf(BUF);
 
-    auto emit = [&](FileEvent ev) {
+    auto emit = [&](const FileEvent& ev) {
         if (running_) cb_(ev);
     };
 
+    auto flushStaleMoves = [&]() {
+        auto now = std::chrono::steady_clock::now();
+        for (auto it = pending.begin(); it != pending.end();) {
+            if (now - it->second.at < std::chrono::seconds(2)) { ++it; continue; }
+            FileEvent old = it->second.ev;
+            old.action = EventAction::Deleted;   // файл ушёл из наблюдаемого дерева
+            old.name = old.oldName;
+            old.oldName.clear();
+            emit(old);
+            it = pending.erase(it);
+        }
+    };
+
+    int wakeFd = -1;
+    {
+        std::lock_guard<std::mutex> lock(wakeMu_);
+        wakeFd = wakeFd_[0];
+    }
+
     while (running_) {
+        struct pollfd fds[2];
+        fds[0].fd = fd;
+        fds[0].events = POLLIN;
+        fds[0].revents = 0;
+        fds[1].fd = wakeFd;
+        fds[1].events = POLLIN;
+        fds[1].revents = 0;
+
+        int pr = poll(fds, wakeFd >= 0 ? 2 : 1, 500);
+        if (pr < 0) {
+            if (errno == EINTR) continue;
+            ae::warn(L"inotify poll failed");
+            break;
+        }
+        if (wakeFd >= 0 && (fds[1].revents & POLLIN)) break;   // stop()
+        if (pr == 0) { flushStaleMoves(); continue; }          // таймаут: чистим зависшие MOVED_FROM
+        if (!(fds[0].revents & POLLIN)) continue;
+
         ssize_t len = read(fd, buf.data(), BUF);
-        if (len <= 0) break;
+        if (len < 0) {
+            if (errno == EINTR) continue;
+            ae::warn(L"inotify read failed");
+            break;
+        }
+        if (len == 0) continue;
 
         char* p = buf.data();
         char* end = p + len;
-        while (p < end) {
+        while (p + sizeof(inotify_event) <= end) {
             auto* ev = reinterpret_cast<inotify_event*>(p);
+            if (ev->len > (size_t)(end - p) - sizeof(inotify_event)) break;
             std::string name(ev->len ? ev->name : "");
             auto itDir = wd2dir.find(ev->wd);
             std::wstring dir = (itDir != wd2dir.end()) ? itDir->second : L"";
@@ -363,13 +535,13 @@ void Watcher::loop(int index) {
             else if (ev->mask & IN_MOVED_FROM) {
                 fe.action = EventAction::Renamed;
                 fe.oldName = wname;          // старое имя известно, новое пришлёт MOVED_TO
-                pending[ev->cookie] = fe;    // ждём пару
+                pending[ev->cookie] = PendingMove{fe, std::chrono::steady_clock::now()};
             }
             else if (ev->mask & IN_MOVED_TO) {
                 auto pit = pending.find(ev->cookie);
                 fe.action = EventAction::Renamed;
                 if (pit != pending.end()) {
-                    fe.oldName = pit->second.oldName;
+                    fe.oldName = pit->second.ev.oldName;
                     pending.erase(pit);
                 }
                 emit(fe);
@@ -398,6 +570,7 @@ void Watcher::loop(int index) {
 
             p += sizeof(inotify_event) + ev->len;
         }
+        flushStaleMoves();
     }
     close(fd);
 }

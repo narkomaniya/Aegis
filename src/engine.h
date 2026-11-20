@@ -13,6 +13,7 @@
 //   9. серия сильных срабатываний    -> быстрая эскалация (атака)
 #include <deque>
 #include <mutex>
+#include <atomic>
 #include <chrono>
 #include <set>
 #include <string>
@@ -39,15 +40,15 @@ public:
     // Обработать одно событие (вызывается из потоков Watcher).
     void onEvent(const FileEvent& e);
 
-    void setSensitivity(int s) { sensitivity_ = s; } // 0 low, 1 medium, 2 high
+    void setSensitivity(int s) { std::lock_guard<std::mutex> l(m_); sensitivity_ = s; } // 0 low, 1 medium, 2 high
     void setUltraLight(bool v) { ultraLight_ = v; }
-    void setBackupRoot(std::wstring r) { backupRoot_ = std::move(r); }
+    void setBackupRoot(std::wstring r) { std::lock_guard<std::mutex> l(m_); backupRoot_ = std::move(r); }
     void setExclusions(std::vector<std::wstring> paths, std::vector<std::wstring> exts);
     void setFolderSensitivities(std::vector<std::pair<std::wstring,int>> map);
 
-    unsigned long long quarantinedCount() const { return quarantined_; }
-    unsigned long long alertCount() const { return alerts_; }
-    unsigned long long eventCount() const { return events_; }
+    unsigned long long quarantinedCount() const { std::lock_guard<std::mutex> l(m_); return quarantined_; }
+    unsigned long long alertCount() const { std::lock_guard<std::mutex> l(m_); return alerts_; }
+    unsigned long long eventCount() const { std::lock_guard<std::mutex> l(m_); return events_; }
     bool emergencyActive() const;
 
     // Не трогать этот путь (файл только что вернули из карантина через restore)
@@ -65,16 +66,17 @@ private:
     bool isExcluded(const std::wstring& full, const std::wstring& name) const;
     int sensitivityFor(const std::wstring& full) const;
     void take(const FileEvent& e, const std::wstring& full, const std::wstring& reason, bool copyOnly);
+    void ensureCanary(const std::wstring& dir);              // (пере)создать ловушку в папке
     void noteRate(bool isRename = false);
-    void checkRate();
-    void checkRenames();
+    void checkRate(int sensitivity);
+    void checkRenames(int sensitivity);
     void trimWorkingSet();
 
     Quarantine& q_;
     std::vector<std::wstring> protectedRoots_;
 
     mutable std::mutex m_;
-    std::set<std::wstring> ignored_;   // пути после restore — не забирать обратно
+    std::map<std::wstring, std::chrono::steady_clock::time_point> ignored_; // путь -> когда игнорировать до
     std::deque<std::chrono::steady_clock::time_point> rate_;
     std::deque<std::chrono::steady_clock::time_point> renames_;
     std::deque<std::chrono::steady_clock::time_point> hits_;
@@ -84,7 +86,7 @@ private:
     unsigned long long quarantined_ = 0;
     unsigned long long alerts_ = 0;
     int sensitivity_ = 1; // 0 low, 1 medium, 2 high
-    bool ultraLight_ = false;
+    std::atomic<bool> ultraLight_{false};
     std::wstring backupRoot_;
 
     std::vector<std::wstring> excludePaths_;

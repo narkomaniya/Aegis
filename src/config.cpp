@@ -14,6 +14,8 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <locale>
+#include <codecvt>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -67,7 +69,12 @@ static std::string wToUtf8(const std::wstring& w) {
     if (n > 0) WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), s.data(), n, nullptr, nullptr);
     return s;
 #else
-    return std::string(w.begin(), w.end());
+    try {
+        std::wstring_convert<std::codecvt_utf8<wchar_t>> conv;
+        return conv.to_bytes(w);
+    } catch (...) {
+        return std::string(w.begin(), w.end());
+    }
 #endif
 }
 
@@ -79,7 +86,12 @@ static std::wstring utf8ToW(const std::string& s) {
     if (n > 0) MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), w.data(), n);
     return w;
 #else
-    return std::wstring(s.begin(), s.end());
+    try {
+        std::wstring_convert<std::codecvt_utf8<wchar_t>> conv;
+        return conv.from_bytes(s);
+    } catch (...) {
+        return std::wstring(s.begin(), s.end());
+    }
 #endif
 }
 
@@ -154,26 +166,49 @@ Settings loadSettings() {
 
 bool saveSettings(const Settings& s) {
     std::error_code ec;
-    fs::create_directories(fs::path(configPath()).parent_path(), ec);
-    std::ofstream f(fs::path(configPath()), std::ios::binary | std::ios::trunc);
-    if (!f) return false;
-    f << "sensitivity=" << wToUtf8(sensitivityName(s.sensitivity)) << "\n";
-    f << "ultralight=" << (s.ultraLight ? "1" : "0") << "\n";
-    f << "autoupdate=" << (s.autoUpdateCheck ? "1" : "0") << "\n";
-    f << "backup_before_quarantine=" << (s.backupBeforeQuarantine ? "1" : "0") << "\n";
-    f << "language=" << wToUtf8(s.language.empty()?L"en":s.language) << "\n";
-    f << "ui_theme=" << wToUtf8(s.uiTheme.empty()?L"default":s.uiTheme) << "\n";
-    f << "notify_alerts=" << (s.notifyOnAlerts ? "1" : "0") << "\n";
-    for (const auto& d : s.disabledMods) f << "mod_disabled=" << wToUtf8(d) << "\n";
-    f << "last_update_available=" << (s.lastUpdateAvailable ? "1" : "0") << "\n";
-    if (!s.lastUpdateVersion.empty())
-        f << "last_update_version=" << wToUtf8(s.lastUpdateVersion) << "\n";
-    for (const auto& wf : s.watchFolders) {
-        std::string sv = (wf.sensitivity < 0) ? "-" : wToUtf8(sensitivityName(wf.sensitivity));
-        f << "watch=" << sv << "|" << wToUtf8(wf.path) << "\n";
+    const fs::path target = fs::path(configPath());
+    fs::create_directories(target.parent_path(), ec);
+    if (ec) return false;
+
+    // Пишем во временный файл и подменяем: сбой/падение не оставит пустой конфиг.
+    fs::path tmp = target;
+    tmp += L".tmp";
+
+    {
+        std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+        if (!f) return false;
+        f << "sensitivity=" << wToUtf8(sensitivityName(s.sensitivity)) << "\n";
+        f << "ultralight=" << (s.ultraLight ? "1" : "0") << "\n";
+        f << "autoupdate=" << (s.autoUpdateCheck ? "1" : "0") << "\n";
+        f << "backup_before_quarantine=" << (s.backupBeforeQuarantine ? "1" : "0") << "\n";
+        f << "language=" << wToUtf8(s.language.empty()?L"en":s.language) << "\n";
+        f << "ui_theme=" << wToUtf8(s.uiTheme.empty()?L"default":s.uiTheme) << "\n";
+        f << "notify_alerts=" << (s.notifyOnAlerts ? "1" : "0") << "\n";
+        for (const auto& d : s.disabledMods) f << "mod_disabled=" << wToUtf8(d) << "\n";
+        f << "last_update_available=" << (s.lastUpdateAvailable ? "1" : "0") << "\n";
+        if (!s.lastUpdateVersion.empty())
+            f << "last_update_version=" << wToUtf8(s.lastUpdateVersion) << "\n";
+        for (const auto& wf : s.watchFolders) {
+            std::string sv = (wf.sensitivity < 0) ? "-" : wToUtf8(sensitivityName(wf.sensitivity));
+            f << "watch=" << sv << "|" << wToUtf8(wf.path) << "\n";
+        }
+        for (const auto& p : s.excludePaths) f << "exclude_path=" << wToUtf8(p) << "\n";
+        for (const auto& e : s.excludeExts) f << "exclude_ext=" << wToUtf8(e) << "\n";
+        f.flush();
+        if (!f) { f.close(); std::error_code e2; fs::remove(tmp, e2); return false; }
     }
-    for (const auto& p : s.excludePaths) f << "exclude_path=" << wToUtf8(p) << "\n";
-    for (const auto& e : s.excludeExts) f << "exclude_ext=" << wToUtf8(e) << "\n";
+
+    ec.clear();
+    fs::rename(tmp, target, ec);
+    if (ec) {
+        // Windows не заменяет существующий файл при rename — пробуем ещё раз
+        ec.clear();
+        fs::remove(target, ec);
+        if (ec) { std::error_code e2; fs::remove(tmp, e2); return false; }
+        ec.clear();
+        fs::rename(tmp, target, ec);
+        if (ec) { std::error_code e2; fs::remove(tmp, e2); return false; }
+    }
     return true;
 }
 

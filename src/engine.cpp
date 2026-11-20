@@ -212,6 +212,14 @@ static std::wstring normPath(const std::wstring& p) {
     return lower(s);
 }
 
+// Совпадение пути по границе компонента: "C:/Notes" не должен исключать
+// "C:/NotesBackup" (иначе в защите появляется слепая зона).
+static bool pathMatches(const std::wstring& nf, const std::wstring& p) {
+    if (p.empty() || nf.size() < p.size()) return false;
+    if (nf.compare(0, p.size(), p) != 0) return false;
+    return nf.size() == p.size() || nf[p.size()] == L'/';
+}
+
 // Временные/служебные файлы (редакторы, браузеры, ОС) — их активность
 // не похожа на шифровальщика и даёт ложные срабатывания.
 static bool isIgnoredName(const std::wstring& name) {
@@ -310,15 +318,15 @@ static void raiseEmergencyLocked(unsigned long long& alerts, bool& emergency,
     ae::alert(why);
 }
 
-void Engine::checkRate() {
+void Engine::checkRate(int sensitivity) {
     if (emergency_) {
         if (std::chrono::steady_clock::now() > emergencyUntil_)
             emergency_ = false;
         return;
     }
     size_t limit = 150;
-    if (sensitivity_ <= 0) limit = 220;      // low: fewer false positives
-    else if (sensitivity_ >= 2) limit = 90;  // high: catch faster
+    if (sensitivity <= 0) limit = 220;      // low: fewer false positives
+    else if (sensitivity >= 2) limit = 90;  // high: catch faster
     if (rate_.size() > limit) {
         raiseEmergencyLocked(alerts_, emergency_, emergencyUntil_,
                              L"EMERGENCY: mass file changes — looks like a ransomware attack!");
@@ -326,12 +334,12 @@ void Engine::checkRate() {
     }
 }
 
-void Engine::checkRenames() {
+void Engine::checkRenames(int sensitivity) {
     if (emergency_) return;   // already in emergency — no duplicate alarm
     // Ransomware renames victims in bulk: file.txt -> file.txt.<their-ext>.
     size_t limit = 15;
-    if (sensitivity_ <= 0) limit = 25;
-    else if (sensitivity_ >= 2) limit = 8;
+    if (sensitivity <= 0) limit = 25;
+    else if (sensitivity >= 2) limit = 8;
     if (renames_.size() > limit) {
         raiseEmergencyLocked(alerts_, emergency_, emergencyUntil_,
                              L"ANOMALY: mass rename burst — typical ransomware behavior (files renamed during encryption)");
@@ -350,7 +358,9 @@ static void noteHitLocked(std::deque<std::chrono::steady_clock::time_point>& hit
     size_t limit = 4;
     if (sensitivity <= 0) limit = 6;
     else if (sensitivity >= 2) limit = 3;
-    if (hits.size() >= limit) {
+    // В аварийном режиме не поднимаем тревогу на каждое срабатывание:
+    // иначе массовое шифрование порождает лавину логов и алертов.
+    if (hits.size() >= limit && !emergency) {
         raiseEmergencyLocked(alerts, emergency, until,
             L"EMERGENCY: multiple ransomware-like detections in a short time — attack in progress!");
         ae::warn(L"new files will be copied to quarantine for 30 seconds");
@@ -374,9 +384,18 @@ void Engine::take(const FileEvent& e, const std::wstring& full,
     std::wstring reasonFull = reason;
     if (!who.empty()) reasonFull += L"  | touched by " + who;
 
-    bool done = q_.moveIn(full, reasonFull, copyOnly, backupRoot_);
+    std::wstring backup;
+    {
+        std::lock_guard<std::mutex> lock(m_);
+        backup = backupRoot_;
+    }
+
+    bool done = q_.moveIn(full, reasonFull, copyOnly, backup);
     if (done) {
-        ++quarantined_;
+        {
+            std::lock_guard<std::mutex> lock(m_);
+            ++quarantined_;
+        }
         if (copyOnly) {
             ae::warn(L"copied to quarantine: " + full + L"  (" + reasonFull + L")");
         } else {
@@ -390,8 +409,14 @@ void Engine::take(const FileEvent& e, const std::wstring& full,
 
 void Engine::ignorePath(const std::wstring& full) {
     std::lock_guard<std::mutex> lock(m_);
-    if (ignored_.size() >= 512) ignored_.clear();   // потолок памяти: пути restore недолговечны
-    ignored_.insert(lower(full));
+    const auto now = std::chrono::steady_clock::now();
+    // Чистим протухшие записи: путь не должен быть «немым» навсегда.
+    for (auto it = ignored_.begin(); it != ignored_.end();) {
+        if (now - it->second > std::chrono::seconds(10)) it = ignored_.erase(it);
+        else ++it;
+    }
+    if (ignored_.size() >= 512) ignored_.clear();   // потолок памяти
+    ignored_[lower(full)] = now;
 }
 
 void Engine::setExclusions(std::vector<std::wstring> paths, std::vector<std::wstring> exts) {
@@ -418,8 +443,9 @@ void Engine::setFolderSensitivities(std::vector<std::pair<std::wstring,int>> map
 bool Engine::isExcluded(const std::wstring& full, const std::wstring& name) const {
     std::wstring nf = normPath(full);
     std::wstring ne = extOf(name);
+    std::lock_guard<std::mutex> lock(m_);
     for (const auto& p : excludePaths_) {
-        if (!p.empty() && nf.rfind(p, 0) == 0) return true; // prefix match
+        if (pathMatches(nf, p)) return true;
     }
     for (const auto& e : excludeExts_) {
         if (!e.empty() && ne == e) return true;
@@ -429,12 +455,13 @@ bool Engine::isExcluded(const std::wstring& full, const std::wstring& name) cons
 
 int Engine::sensitivityFor(const std::wstring& full) const {
     std::wstring nf = normPath(full);
+    std::lock_guard<std::mutex> lock(m_);
     int best = sensitivity_;
     size_t bestLen = 0;
     for (const auto& kv : folderSensitivity_) {
         if (kv.second < 0) continue;
         const auto& p = kv.first;
-        if (!p.empty() && nf.rfind(p, 0) == 0 && p.size() >= bestLen) {
+        if (pathMatches(nf, p) && p.size() >= bestLen) {
             bestLen = p.size();
             best = kv.second;
         }
@@ -462,33 +489,47 @@ IntegrityResult Engine::checkIntegrity() const {
     return r;
 }
 
+// Создать (или восстановить) canary-ловушку в одной папке.
+void Engine::ensureCanary(const std::wstring& dir) {
+    std::error_code ec;
+    fs::path d(dir);
+    if (!fs::is_directory(d, ec) || ec) return;
+
+    fs::path canary = d / fs::path(kCanaryName);
+    std::ofstream f(canary, std::ios::binary | std::ios::trunc);
+    if (!f) {
+        ae::warn(L"canary could not be created: " + canary.wstring());
+        return;
+    }
+    f << kCanaryText;
+    f.close();
+    if (!f) {
+        ae::warn(L"canary could not be written: " + canary.wstring());
+        return;
+    }
+
+#ifdef _WIN32
+    // спрятать ловушку от глаз пользователя
+    DWORD attrs = GetFileAttributesW(canary.c_str());
+    if (attrs != INVALID_FILE_ATTRIBUTES)
+        SetFileAttributesW(canary.c_str(),
+                           attrs | FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM);
+#endif
+    ae::info(L"canary deployed: " + canary.wstring());
+}
+
 // Расставить canary-ловушки по наблюдаемым папкам (вызывается ДО запуска
 // слежения, чтобы не поймать собственное создание ловушки).
 void Engine::seedCanaries() {
     std::error_code ec;
     for (const auto& root : protectedRoots_) {
         fs::path dir(root);
-        if (!fs::is_directory(dir, ec) || ec) continue;   // несуществующие тихо пропускаем
+        if (!fs::is_directory(dir, ec) || ec) { ec.clear(); continue; }   // несуществующие тихо пропускаем
 
         fs::path canary = dir / fs::path(kCanaryName);
-        if (fs::exists(canary, ec) && !ec) continue;     // ловушка уже на месте (не пересоздаём)
-
-        std::ofstream f(canary, std::ios::binary | std::ios::trunc);
-        if (!f) {
-            ae::warn(L"canary could not be created: " + canary.wstring());
-            continue;
-        }
-        f << kCanaryText;
-        f.close();
-
-#ifdef _WIN32
-        // спрятать ловушку от глаз пользователя
-        DWORD attrs = GetFileAttributesW(canary.c_str());
-        if (attrs != INVALID_FILE_ATTRIBUTES)
-            SetFileAttributesW(canary.c_str(),
-                               attrs | FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM);
-#endif
-        ae::info(L"canary deployed: " + canary.wstring());
+        if (fs::exists(canary, ec) && !ec) { ec.clear(); continue; }     // ловушка уже на месте
+        ec.clear();
+        ensureCanary(root);
     }
 }
 
@@ -511,17 +552,7 @@ void Engine::onEvent(const FileEvent& e) {
             // вернуть ловушку на место мгновенно
             fs::path canary = fs::path(e.dir) / fs::path(kCanaryName);
             ignorePath(canary.wstring());   // событие создания не ловим сами
-            std::ofstream f(canary, std::ios::binary | std::ios::trunc);
-            if (f) {
-                f << kCanaryText;
-#ifdef _WIN32
-                DWORD attrs = GetFileAttributesW(canary.c_str());
-                if (attrs != INVALID_FILE_ATTRIBUTES)
-                    SetFileAttributesW(canary.c_str(),
-                                       attrs | FILE_ATTRIBUTE_HIDDEN |
-                                       FILE_ATTRIBUTE_SYSTEM);
-#endif
-            }
+            ensureCanary(e.dir);
         }
         return;   // обычные удаления нам не интересны
     }
@@ -531,7 +562,14 @@ void Engine::onEvent(const FileEvent& e) {
 
     {
         std::lock_guard<std::mutex> lock(m_);
-        if (ignored_.count(lower(full))) return;    // только вернули из карантина — не трогаем
+        auto it = ignored_.find(lower(full));
+        if (it != ignored_.end()) {
+            // Игнорируем только короткое окно после restore/пересоздания ловушки,
+            // иначе путь остаётся «немым» до конца работы процесса.
+            if (std::chrono::steady_clock::now() - it->second < std::chrono::seconds(5))
+                return;
+            ignored_.erase(it);
+        }
     }
 
     if (insideQuarantine(full)) return;             // карантин сам себя не забирает
@@ -548,19 +586,16 @@ void Engine::onEvent(const FileEvent& e) {
 
     // per-folder sensitivity (effective for this event)
     int effSens = sensitivityFor(full);
-    bool ultra = ultraLight_;
+    bool ultra = ultraLight_.load();
 
     {
         std::lock_guard<std::mutex> lock(m_);
         ++events_;
         // ultra-light: trim a bit more aggressively to keep RSS tiny
         if (events_ % (ultra ? 256ULL : 1024ULL) == 0) trimWorkingSet();
-        int prev = sensitivity_;
-        sensitivity_ = effSens; // use for rate/rename thresholds in this tick
         noteRate(e.action == EventAction::Renamed);
-        checkRate();
-        checkRenames();
-        sensitivity_ = prev;
+        checkRate(effSens);
+        checkRenames(effSens);
     }
 
     const std::wstring ext     = extOf(e.name);
@@ -584,6 +619,31 @@ void Engine::onEvent(const FileEvent& e) {
         ae::alert(L"TAMPER ALERT: canary touched: " + full +
                   L" — something is messing with this folder!");
         take(e, full, L"canary honey-file touched", false);
+        // recreate_event ignoriruem, иначе созданная ловушка сама вызовет
+        // новую тревогу и получится бесконечный цикл take() -> recreate.
+        ignorePath(full);
+        ensureCanary(e.dir);   // ловушка не должна исчезнуть после первого касания
+        return;
+    }
+
+    // 0b-2) Ловушку унесли/переименовали под другим именем: new name чужой,
+    // oldName — canary. Раньше такой случай вообще не детектировался.
+    if (e.action == EventAction::Renamed && !e.oldName.empty() &&
+        lower(e.oldName) == kCanaryName) {
+        {
+            std::lock_guard<std::mutex> lock(m_);
+            if (!emergency_) {
+                emergency_ = true;
+                emergencyUntil_ = std::chrono::steady_clock::now() +
+                                  std::chrono::seconds(30);
+            }
+            ++alerts_;
+            noteHitLocked(hits_, alerts_, emergency_, emergencyUntil_, effSens);
+        }
+        ae::alert(L"TAMPER ALERT: canary was moved away: " + full +
+                  L" — someone is disarming the trap!");
+        ignorePath((fs::path(e.dir) / fs::path(kCanaryName)).wstring());
+        ensureCanary(e.dir);
         return;
     }
 
@@ -615,7 +675,7 @@ void Engine::onEvent(const FileEvent& e) {
                     if (!hit.empty()) {
                         std::wstring hitw(hit.begin(), hit.end());
                         take(e, full, L"ransom note content: \"" + hitw + L"\"", false);
-                        { std::lock_guard<std::mutex> lock(m_); int prev=sensitivity_; sensitivity_=effSens; noteHitLocked(hits_, alerts_, emergency_, emergencyUntil_, effSens); sensitivity_=prev; }
+                        { std::lock_guard<std::mutex> lock(m_); noteHitLocked(hits_, alerts_, emergency_, emergencyUntil_, effSens); }
                         return;
                     }
                 }
@@ -664,7 +724,7 @@ void Engine::onEvent(const FileEvent& e) {
                 swprintf(buf, 16, L"%.2f", H);
                 take(e, full, L"high entropy (" + std::wstring(buf) +
                      L"/8.0) — looks like encryption", false);
-                { std::lock_guard<std::mutex> lock(m_); int prev=sensitivity_; sensitivity_=effSens; noteHitLocked(hits_, alerts_, emergency_, emergencyUntil_, effSens); sensitivity_=prev; }
+                { std::lock_guard<std::mutex> lock(m_); noteHitLocked(hits_, alerts_, emergency_, emergencyUntil_, effSens); }
                 return;
             }
         }

@@ -57,6 +57,19 @@ static std::wstring platformAsset() {
 #endif
 }
 
+#ifndef _WIN32
+// Single-quote a path/URL for /bin/sh so spaces, quotes and $(...) stay literal.
+static std::string shellQuote(const std::string& s) {
+    std::string out = "'";
+    for (char c : s) {
+        if (c == '\'') out += "'\\''";
+        else out += c;
+    }
+    out += "'";
+    return out;
+}
+#endif
+
 // --- HTTP GET на файл ---
 static bool httpGetToFile(const std::wstring& url, const std::wstring& dest) {
 #ifdef _WIN32
@@ -73,13 +86,13 @@ static bool httpGetToFile(const std::wstring& url, const std::wstring& dest) {
     // Linux/macOS: у всех есть curl (на macOS — в системе по умолчанию)
     std::string u(url.begin(), url.end());
     std::string d(dest.begin(), dest.end());
-    std::string cmd = "curl -fsSL --connect-timeout 15 -o \"" + d + "\" \"" + u + "\" 2>/dev/null";
+    std::string cmd = "curl -fsSL --connect-timeout 15 -o " + shellQuote(d) + " " + shellQuote(u) + " 2>/dev/null";
     std::system(cmd.c_str());
     std::error_code ec;
     if (fs::exists(fs::path(dest), ec) && fs::file_size(fs::path(dest), ec) > 0)
         return true;
     // запасной wget
-    cmd = "wget -q --timeout=15 -O \"" + d + "\" \"" + u + "\" 2>/dev/null";
+    cmd = "wget -q --timeout=15 -O " + shellQuote(d) + " " + shellQuote(u) + " 2>/dev/null";
     std::system(cmd.c_str());
     return fs::exists(fs::path(dest), ec) && fs::file_size(fs::path(dest), ec) > 0;
 #endif
@@ -155,23 +168,21 @@ static int cmpVersion(const std::vector<long>& a, const std::vector<long>& b) {
 }
 
 static std::wstring tempDir() {
-    const char* t = std::getenv("TEMP");
 #ifdef _WIN32
-    if (!t) t = std::getenv("TMP");
-#endif
-    if (!t) t = std::getenv("TMPDIR");
+    wchar_t buf[MAX_PATH + 1] = {};
+    DWORD n = GetTempPathW(MAX_PATH + 1, buf);
+    if (n > 0 && n <= MAX_PATH) return std::wstring(buf, n);
+    const wchar_t* t = _wgetenv(L"TEMP");
+    if (!t) t = _wgetenv(L"TMP");
+    if (!t) t = _wgetenv(L"USERPROFILE");
+    return t ? std::wstring(t) : L".";
+#else
+    // Unix: пути внутри проекта хранятся как wide-строки из байтов (см. selfPath()).
+    const char* t = std::getenv("TMPDIR");
     if (!t) t = std::getenv("HOME");
     if (!t) t = "/tmp";
-    std::wstring d;
-#ifdef _WIN32
-    // ANSI/CP1251 домашние пути -> широкие корректно (может быть кириллица)
-    int n = MultiByteToWideChar(CP_ACP, 0, t, -1, nullptr, 0);
-    d.resize((size_t)(n > 0 ? n - 1 : 0));
-    if (n > 0) MultiByteToWideChar(CP_ACP, 0, t, -1, d.data(), n);
-#else
-    d = wideOfUtf8(t);
+    return std::wstring(t, t + std::strlen(t));
 #endif
-    return d;
 }
 
 static std::string toLowerAscii(std::string s) {
@@ -208,12 +219,7 @@ static std::string computeSha256OfFile(const std::wstring& pathW) {
     std::string out;
     while (fgets(buf, sizeof(buf), pipe)) out += buf;
     _pclose(pipe);
-    std::string hex;
-    for (char c : out) {
-        if ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) hex.push_back((char)std::tolower((unsigned char)c));
-        else if (!hex.empty()) break; // stop after first token-like hex block line may include spaces, so be careful
-    }
-    // certutil prints hash possibly with spaces/newlines on second line; extract longest hex run
+    // certutil prints hash possibly with spaces/newlines on the second line; extract longest hex run
     std::string best, cur;
     for (char c : out) {
         if ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) cur.push_back((char)std::tolower((unsigned char)c));
@@ -237,8 +243,8 @@ static std::string computeSha256OfFile(const std::wstring& pathW) {
         return (best.size() >= 64) ? best.substr(0,64) : "";
     };
     std::string path(pathW.begin(), pathW.end());
-    std::string h = tryCmd("sha256sum \"" + path + "\" 2>/dev/null");
-    if (h.empty()) h = tryCmd("shasum -a 256 \"" + path + "\" 2>/dev/null");
+    std::string h = tryCmd("sha256sum " + shellQuote(path) + " 2>/dev/null");
+    if (h.empty()) h = tryCmd("shasum -a 256 " + shellQuote(path) + " 2>/dev/null");
     return h;
 #endif
 }
@@ -286,7 +292,6 @@ int runUpdate(bool assumeYes) {
     std::error_code ec;
     if (!httpGetToFile(kApiUrl, jsonPath)) {
         warn(L"could not reach GitHub (offline? api rate-limited?)");
-        std::system("true");
         return 2;
     }
 
@@ -383,8 +388,22 @@ int runUpdate(bool assumeYes) {
         console(L"note: integrity verification was not completed (checksum unavailable).");
     }
 
+#ifndef _WIN32
+    // curl/wget create the file with 0644 — restore the executable bit before swapping it in,
+    // otherwise the updated binary cannot be started.
+    {
+        std::error_code pec;
+        fs::permissions(fs::path(newPath),
+                        fs::perms::owner_all | fs::perms::group_read | fs::perms::group_exec |
+                            fs::perms::others_read | fs::perms::others_exec,
+                        fs::perm_options::add, pec);
+    }
+#endif
+
     // замена: старый -> .old, новый -> на место. rename у работающего
     // процесса разрешён на Win/Linux/macOS; на ошибках откатываем.
+    ec.clear();
+    fs::remove(fs::path(oldPath), ec);  // stale .old from an earlier update blocks rename on Windows
     ec.clear();
     fs::rename(fs::path(self), fs::path(oldPath), ec);
     if (ec) { warn(L"cannot swap: " + wideOfUtf8(ec.message())); return 2; }
