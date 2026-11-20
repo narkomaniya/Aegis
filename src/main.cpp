@@ -1436,59 +1436,92 @@ static bool isCatCommand(const std::wstring& s) {
 }
 
 static void secretCat() {
-    static const wchar_t* kArt[4][3] = {
-        { L"  /\\_/\\",  L" ( o.o )~~~", L"  > ^ <   ~" },
-        { L"  /\\_/\\",  L" ( o.o )  /", L"  > ^ < /  " },
-        { L"  /\\_/\\",  L" ( -.- ) \\", L"  > ^ <  \\ " },
-        { L"  /\\_/\\",  L" ( o.o )~",   L"  > ^ <~~ "  },
+    // 8 кадров — хвост плавно проходит весь путь, а не дёргается между 4 позами.
+    static const wchar_t* kArt[8][3] = {
+        { L"  /\\_/\\", L" ( o.o )~~~", L"  > ^ <   ~" },
+        { L"  /\\_/\\", L" ( o.o )  /", L"  > ^ < /  " },
+        { L"  /\\_/\\", L" ( o.o ) / ", L"  > ^ </   " },
+        { L"  /\\_/\\", L" ( -.- ) | ", L"  > ^ <|   " },
+        { L"  /\\_/\\", L" ( o.o ) \\ ", L"  > ^ < \\  " },
+        { L"  /\\_/\\", L" ( o.o )  \\", L"  > ^ <  \\ " },
+        { L"  /\\_/\\", L" ( o.o )~~ ", L"  > ^ < ~  " },
+        { L"  /\\_/\\", L" ( o.o )~  ", L"  > ^ <~~  " },
+    };
+    // Однострочный запасной вариант: перерисовывается одним '\r' даже там,
+    // где нет курсорного API и ANSI (например, в перенаправленном выводе).
+    static const wchar_t* kInline[8] = {
+        L"  /\\_/\\  ( o.o )  > ^ <  ~~~~",
+        L"  /\\_/\\  ( o.o )  > ^ <  ~~~/",
+        L"  /\\_/\\  ( o.o )  > ^ <  ~~ /",
+        L"  /\\_/\\  ( -.- )  > ^ <  ~|  ",
+        L"  /\\_/\\  ( o.o )  > ^ <  |   ",
+        L"  /\\_/\\  ( o.o )  > ^ <  \\   ",
+        L"  /\\_/\\  ( o.o )  > ^ <  ~\\  ",
+        L"  /\\_/\\  ( o.o )  > ^ <  ~~  ",
     };
     std::wcout.clear();   // сбрасываем failbit от возможного прошлого вывода
 
-    bool tty = false;
+#ifndef _WIN32
+    const bool inPlace = isatty(1) != 0;   // можно ли перерисовывать арт на месте
+#endif
 #ifdef _WIN32
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
     CONSOLE_SCREEN_BUFFER_INFO csbi{};
     const bool canMove = hOut != INVALID_HANDLE_VALUE &&
                          GetConsoleScreenBufferInfo(hOut, &csbi) != 0;
     const COORD home = canMove ? csbi.dwCursorPosition : COORD{0, 0};
-    tty = canMove;
-#else
-    tty = isatty(1) != 0;
 #endif
 
     const auto finishAt = std::chrono::steady_clock::now() + std::chrono::seconds(10);
     size_t frame = 0;
     while (std::chrono::steady_clock::now() < finishAt) {
-        const auto& art = kArt[frame % 4];
+        const auto& art = kArt[frame % 8];
 #ifdef _WIN32
         if (canMove) {
+            // Пишем напрямую в консоль, минуя CRT-преобразование '\n' — так
+            // курсор гарантированно возвращается в исходную точку кадра.
             SetConsoleCursorPosition(hOut, home);
-            std::wcout << art[0] << L"\r\n" << art[1] << L"\r\n" << art[2];
+            const std::wstring s = std::wstring(art[0]) + L"\r\n" +
+                                   art[1] + L"\r\n" + art[2];
+            DWORD written = 0;
+            WriteConsoleW(hOut, s.c_str(), (DWORD)s.size(), &written, nullptr);
         } else {
-            std::wcout << L"\r" << art[0] << L"\r\n" << art[1] << L"\r\n" << art[2];
+            // Нет консоли — анимируем одну строку возвратом каретки.
+            std::wcout << L'\r' << kInline[frame % 8];
+            std::wcout.flush();
         }
 #else
-        if (tty)
+        if (inPlace)
             std::wcout << (frame ? L"\033[2A\r" : L"")
                        << art[0] << L"\r\n" << art[1] << L"\r\n" << art[2];
         else
-            std::wcout << art[0] << L"\r\n" << art[1] << L"\r\n" << art[2] << L"\r\n\r\n";
-#endif
+            std::wcout << L'\r' << kInline[frame % 8];
         std::wcout.flush();
+#endif
         ++frame;
-        std::this_thread::sleep_for(std::chrono::milliseconds(tty ? 110 : 400));
+        std::this_thread::sleep_for(std::chrono::milliseconds(90));
     }
 
     // Оставляем кота на экране и дописываем финальную фразу.
 #ifdef _WIN32
-    if (canMove) SetConsoleCursorPosition(hOut, home);
-    else std::wcout << L"\r";
+    if (canMove) {
+        SetConsoleCursorPosition(hOut, home);
+        const std::wstring s = std::wstring(kArt[0][0]) + L"\r\n" +
+                               kArt[0][1] + L"\r\n" + kArt[0][2] +
+                               L"\r\n   ...mrrp.\n";
+        DWORD written = 0;
+        WriteConsoleW(hOut, s.c_str(), (DWORD)s.size(), &written, nullptr);
+    } else {
+        std::wcout << L'\r' << kInline[0] << L"\r\n   ...mrrp.\n";
+        std::wcout.flush();
+    }
 #else
-    if (tty) std::wcout << L"\033[2A\r";
-#endif
+    if (inPlace) std::wcout << L"\033[2A\r";
+    else std::wcout << L'\r';
     std::wcout << kArt[0][0] << L"\r\n" << kArt[0][1] << L"\r\n" << kArt[0][2]
                << L"\r\n   ...mrrp.\n";
     std::wcout.flush();
+#endif
 }
 
 static int interactiveMenu() {
