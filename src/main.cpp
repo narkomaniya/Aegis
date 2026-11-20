@@ -60,6 +60,8 @@
 namespace fs = std::filesystem;
 using namespace ae;
 
+static void secretCat();   // скрытая команда (определена ниже)
+
 #ifdef _WIN32
 static std::wstring toW(const std::string& s) {
     if (s.empty()) return L"";
@@ -1367,6 +1369,7 @@ static int runWatch(const Settings& inSettings, bool fromMenu, std::vector<std::
             else if (low == L"restore") { printRecordList(q); console(L"  to restore: restore <number>"); }
             else if (low.rfind(L"restore ", 0) == 0) { doRestoreByNumber(q, &engine, trimW(line.substr(8))); }
             else if (low == L"help") { console(L""); printHelp(); }
+            else if (low == L"pspsps") secretCat();
             else if (!low.empty()) { console(L"unknown command: try help"); }
         }
         if (stop) break;
@@ -1417,6 +1420,37 @@ static void watchMenu(Settings& settings) {
     }
 }
 
+// Секретная команда: её нет в help. Кот приходит на "pspsps" (так зовут кота)
+// и живёт ровно 10 секунд, виляя хвостом. Ничего не трогает в системе.
+static void secretCat() {
+    static const wchar_t* kFrames[] = {
+        L"  /\\_/\\\n ( o.o )~~~\n  > ^ <   ~",
+        L"  /\\_/\\\n ( o.o )  /\n  > ^ < /  ",
+        L"  /\\_/\\\n ( -.- ) \\\n  > ^ <  \\ ",
+        L"  /\\_/\\\n ( o.o )~\n  > ^ <~~ ",
+    };
+    bool tty = false;
+#ifdef _WIN32
+    tty = _isatty(_fileno(stdout)) != 0;
+#else
+    tty = isatty(1) != 0;
+#endif
+    const auto start = std::chrono::steady_clock::now();
+    size_t frame = 0;
+    while (std::chrono::steady_clock::now() - start < std::chrono::seconds(10)) {
+        if (tty)
+            std::wcout << L"\r" << kFrames[frame % 4] << L"\033[2A";
+        else
+            std::wcout << kFrames[frame % 4] << L"\n\n";
+        std::wcout.flush();
+        ++frame;
+        std::this_thread::sleep_for(std::chrono::milliseconds(tty ? 120 : 600));
+    }
+    if (tty) std::wcout << L"\r\033[2B";
+    std::wcout << kFrames[0] << L"\n   ...mrrp.\n";
+    std::wcout.flush();
+}
+
 static int interactiveMenu() {
     Settings settings = loadSettings();
     applyUiTheme(settings);
@@ -1465,6 +1499,7 @@ static int interactiveMenu() {
         else if (low == L"9" || low == L"update") updateMenu();
         else if (low == L"10" || low == L"autostart" || low == L"background") autostartMenu();
         else if (low == L"h" || low == L"help") helpScreen();
+        else if (low == L"pspsps") secretCat();
         else if (low == L"0" || low == L"q" || low == L"exit") {
             clearScreen(); banner(); ok(L"Bye!"); return 0;
         }
@@ -1494,6 +1529,7 @@ int main(int argc, char** argv) {
 
     if (args.empty()) return interactiveMenu();
     if (args[0] == L"help" || args[0] == L"--help" || args[0] == L"/?") { banner(); printHelp(); return 0; }
+    if (args[0] == L"pspsps") { secretCat(); return 0; }
     if (args[0] == L"status") {
         banner();
         Settings s = loadSettings();
