@@ -13,6 +13,7 @@ $asset = 'aegis.exe'
 $dest = if ($env:AEGIS_INSTALL_DIR) { $env:AEGIS_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'Aegis' }
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ("aegis-install-" + [guid]::NewGuid().ToString('N'))
 $staged = $null
+$backup = $null
 New-Item -ItemType Directory -Path $tmp -Force | Out-Null
 
 try {
@@ -81,15 +82,33 @@ try {
 
     New-Item -ItemType Directory -Path $dest -Force | Out-Null
     $target = Join-Path $dest 'aegis.exe'
-    # Stage next to the target, then rename: the running copy is never truncated.
+    # Stage next to the target, then swap by rename. Windows allows renaming
+    # a running .exe but refuses to overwrite it — this keeps updates working
+    # even when the user forgot to close Aegis.
     $staged = Join-Path $dest 'aegis.exe.new'
+    $backup = Join-Path $dest 'aegis.exe.old'
     Copy-Item -Force (Join-Path $tmp $asset) $staged
 
     # Файл, скачанный из интернета, помечается Mark-of-the-Web: без снятия
     # метки Windows/SmartScreen может отказаться его запускать.
     Unblock-File -Path $staged -ErrorAction SilentlyContinue
-    Move-Item -Force -LiteralPath $staged -Destination $target
+    if (Test-Path -LiteralPath $target) {
+        Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
+        Move-Item -Force -LiteralPath $target -Destination $backup
+        try {
+            Move-Item -Force -LiteralPath $staged -Destination $target
+        } catch {
+            Move-Item -Force -LiteralPath $backup -Destination $target
+            throw
+        }
+        # A running .old cannot be deleted until the process exits; Aegis
+        # cleans it up on the next start.
+        Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
+    } else {
+        Move-Item -Force -LiteralPath $staged -Destination $target
+    }
     $staged = $null
+    $backup = $null
 
     # Добавляем папку в PATH пользователя, чтобы команда `aegis` работала
     # в любом новом терминале (в текущем сеансе — сразу тоже).
@@ -110,5 +129,6 @@ try {
     Write-Host "(in this terminal: `"$target`" help)"
 } finally {
     if ($staged) { Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue }
+    if ($backup) { Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue }
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
 }
