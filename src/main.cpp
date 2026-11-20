@@ -644,6 +644,8 @@ static void printHelp() {
     console(L"");
     console(L"Commands while watching (CLI mode):");
     console(L"  status  quarantine  restore [n]  help  q");
+    console(L"");
+    console(L"P.S. even a shield gets lonely. Try the three little sounds for a stray cat.");
 }
 
 static bool openPath(const std::wstring& path) {

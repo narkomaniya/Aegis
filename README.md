@@ -195,6 +195,10 @@ GitHub Actions builds and smoke-tests on Windows, Linux, and macOS. On version t
 - **Automatic verification (CI):** `.github/workflows/mod-verify.yml` runs strict mod verification for mod-related changes/PRs
 - **Examples included:** `mods/theme-white-black.aegismod` (white) and `mods/theme-white-black-black.aegismod` (black)
 
+## A little secret
+
+Even a shield gets lonely. If you know the three short sounds people make to call a stray cat, try typing exactly that into Aegis — in the terminal or in the menu. It is not listed in `aegis help`, of course.
+
 ## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md) for full release notes (v5.0 and earlier).
