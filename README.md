@@ -76,6 +76,30 @@ Aegis combines real-time filesystem monitoring with behavior-based heuristics to
 ### Low footprint
 - Small sampling windows (8 KiB entropy, 16 KiB content), bounded bookkeeping, periodic working-set trimming (Windows), ultra-light mode option
 
+## Install from a terminal
+
+One command, no manual asset hunting. The installer downloads the newest release
+that actually has a published binary, verifies `SHA256SUMS.txt` when available,
+and installs `aegis` to `~/.local/bin` (Linux/macOS) or
+`%LOCALAPPDATA%\Aegis` (Windows). If a release has no binary yet, it falls back
+to building from source (C++17 compiler and git required).
+
+**Linux / macOS**
+```bash
+curl -fsSL https://raw.githubusercontent.com/narkomaniya/Aegis/main/scripts/install.sh | sh
+```
+
+**Windows (PowerShell)**
+```powershell
+irm https://raw.githubusercontent.com/narkomaniya/Aegis/main/scripts/install.ps1 | iex
+```
+
+Override the destination with `AEGIS_INSTALL_DIR`, then just run `aegis help`.
+
+Prefer doing it yourself? Download a binary directly from
+[Releases](https://github.com/narkomaniya/Aegis/releases):
+`aegis-linux`, `aegis-macos`, `aegis.exe`.
+
 ## Build
 
 Requires a C++17 compiler.
