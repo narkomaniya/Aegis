@@ -22,6 +22,11 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#ifndef _WIN32
+#include <codecvt>
+#include <locale>
+#endif
+#include <random>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -98,6 +103,19 @@ static bool httpGetToFile(const std::wstring& url, const std::wstring& dest) {
 #endif
 }
 
+#ifndef _WIN32
+// POSIX: путь из байтов UTF-8 -> настоящие wchar-коды, как в main.cpp::toW().
+// Байтовая «ширина» здесь ломает сравнение путей и fs::path в UTF-8 локали.
+static std::wstring pathFromUtf8(const std::string& s) {
+    try {
+        std::wstring_convert<std::codecvt_utf8<wchar_t>> conv;
+        return conv.from_bytes(s);
+    } catch (...) {
+        return std::wstring(s.begin(), s.end());
+    }
+}
+#endif
+
 // Путь к собственному бинарю
 std::wstring selfPath() {
 #ifdef _WIN32
@@ -107,7 +125,7 @@ std::wstring selfPath() {
 #elif defined(__linux__)
     char buf[2048];
     ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
-    if (n > 0) { buf[n] = '\0'; return std::wstring(buf, buf + n); }
+    if (n > 0) { buf[n] = '\0'; return pathFromUtf8(std::string(buf, n)); }
     return L"";
 #elif defined(__APPLE__)
     char buf[2048];
@@ -115,7 +133,7 @@ std::wstring selfPath() {
     if (_NSGetExecutablePath(buf, &size) == 0) {
         size_t n = 0;
         while (n < size && buf[n]) ++n;
-        return std::wstring(buf, buf + n);
+        return pathFromUtf8(std::string(buf, n));
     }
     return L"";
 #else
@@ -181,13 +199,45 @@ static std::wstring tempDir() {
     const char* t = std::getenv("TMPDIR");
     if (!t) t = std::getenv("HOME");
     if (!t) t = "/tmp";
-    return std::wstring(t, t + std::strlen(t));
+    return pathFromUtf8(std::string(t));
 #endif
 }
 
 static std::string toLowerAscii(std::string s) {
     for (auto& c : s) c = (char)std::tolower((unsigned char)c);
     return s;
+}
+
+// Личная временная папка процесса. Фиксированные имена во временном каталоге
+// можно заранее подменить symlink'ом и перехватить запись — поэтому качаем
+// только в созданную нами (0700 на POSIX) уникальную папку.
+static std::wstring workDir() {
+    static std::wstring dir;
+    if (!dir.empty()) return dir;
+
+    const std::wstring base = tempDir();
+    std::random_device rd;
+    for (int attempt = 0; attempt < 24; ++attempt) {
+        const unsigned long long a = (static_cast<unsigned long long>(rd()) << 32) | rd();
+        const std::wstring cand = base +
+#ifdef _WIN32
+            L"\\" +
+#else
+            L"/" +
+#endif
+            L"aegis-update-" + std::to_wstring(a);
+        std::error_code ec;
+        if (!fs::create_directory(fs::path(cand), ec) || ec) continue;
+#ifndef _WIN32
+        fs::permissions(fs::path(cand), fs::perms::owner_all,
+                        fs::perm_options::replace, ec);
+#endif
+        dir = cand;
+        return dir;
+    }
+    // Не удалось создать приватную папку — работаем в базовой, но перед каждым
+    // скачиванием всё равно удаляем целевой файл (это снимает готовый symlink).
+    return base;
 }
 
 static std::string parseExpectedSha256(const std::string& sums, const std::wstring& assetW) {
@@ -258,12 +308,14 @@ void cleanupOldBinary() {
 }
 
 std::wstring checkLatestVersion() {
-    std::wstring tmp = tempDir();
+    std::wstring tmp = workDir();
 #ifdef _WIN32
     std::wstring jsonPath = tmp + L"\\aegis-release-check.json";
 #else
     std::wstring jsonPath = tmp + L"/aegis-release-check.json";
 #endif
+    std::error_code remEc;
+    fs::remove(fs::path(jsonPath), remEc);   // снимаем готовый symlink
     if (!httpGetToFile(kApiUrl, jsonPath)) return L"";
     std::wstring tag;
     {
@@ -283,13 +335,15 @@ std::wstring checkLatestVersion() {
 int runUpdate(bool assumeYes) {
     console(L"checking the latest GitHub release...");
 
-    std::wstring tmp = tempDir();
+    std::wstring tmp = workDir();
 #ifdef _WIN32
     std::wstring jsonPath = tmp + L"\\aegis-release.json";
 #else
     std::wstring jsonPath = tmp + L"/aegis-release.json";
 #endif
     std::error_code ec;
+    fs::remove(fs::path(jsonPath), ec);   // снимаем готовый symlink
+    ec.clear();
     if (!httpGetToFile(kApiUrl, jsonPath)) {
         warn(L"could not reach GitHub (offline? api rate-limited?)");
         return 2;
@@ -353,40 +407,43 @@ int runUpdate(bool assumeYes) {
         return 2;
     }
 
-    // Integrity check (best-effort but enforced when checksum is available)
+    // Integrity check is mandatory: we never replace the running binary with
+    // something we could not verify.
     info(L"verifying download integrity (SHA256)...");
-    bool verified = false;
-    fs::remove(fs::path(sumsPath), ec);
-    if (httpGetToFile(sumsUrl, sumsPath)) {
+    auto abortUpdate = [&](const std::wstring& why) -> int {
+        warn(why);
+        warn(L"update aborted (integrity check failed)");
+        std::error_code cleanEc;
+        fs::remove(fs::path(newPath), cleanEc);
+        return 2;
+    };
+    ec.clear();
+    if (!fs::is_regular_file(fs::path(newPath), ec) || ec)
+        return abortUpdate(L"downloaded file is missing or is not a regular file");
+
+    fs::remove(fs::path(sumsPath), ec);   // снимаем готовый symlink
+    ec.clear();
+    if (!httpGetToFile(sumsUrl, sumsPath))
+        return abortUpdate(L"could not download SHA256SUMS.txt — no way to verify the binary");
+
+    std::string expected;
+    {
         std::ifstream sf(fs::path(sumsPath), std::ios::binary);
         if (sf) {
             std::ostringstream ss; ss << sf.rdbuf();
-            std::string expected = parseExpectedSha256(ss.str(), asset);
-            if (!expected.empty()) {
-                std::string actual = computeSha256OfFile(newPath);
-                if (actual.empty()) {
-                    warn(L"could not compute SHA256 for downloaded file; update aborted for safety");
-                    fs::remove(fs::path(newPath), ec);
-                    return 2;
-                }
-                if (toLowerAscii(actual) != toLowerAscii(expected)) {
-                    warn(L"SHA256 mismatch! expected " + wideOfUtf8(expected) + L" got " + wideOfUtf8(actual));
-                    warn(L"update aborted (integrity check failed)");
-                    fs::remove(fs::path(newPath), ec);
-                    return 2;
-                }
-                verified = true;
-                ok(L"SHA256 verified: " + wideOfUtf8(actual.substr(0, 16)) + L"...");
-            } else {
-                warn(L"SHA256SUMS.txt downloaded but no entry found for " + asset + L" (continuing without verification)");
-            }
+            expected = parseExpectedSha256(ss.str(), asset);
         }
-    } else {
-        warn(L"could not download SHA256SUMS.txt (continuing without verification)");
     }
-    if (!verified) {
-        console(L"note: integrity verification was not completed (checksum unavailable).");
-    }
+    if (expected.empty())
+        return abortUpdate(L"SHA256SUMS.txt has no entry for " + asset);
+
+    const std::string actual = computeSha256OfFile(newPath);
+    if (actual.empty())
+        return abortUpdate(L"could not compute SHA256 for the downloaded file");
+    if (toLowerAscii(actual) != expected)
+        return abortUpdate(L"SHA256 mismatch! expected " + wideOfUtf8(expected) +
+                           L" got " + wideOfUtf8(actual));
+    ok(L"SHA256 verified: " + wideOfUtf8(actual.substr(0, 16)) + L"...");
 
 #ifndef _WIN32
     // curl/wget create the file with 0644 — restore the executable bit before swapping it in,

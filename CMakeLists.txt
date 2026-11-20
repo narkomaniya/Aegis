@@ -17,6 +17,11 @@ add_executable(aegis
     src/mods.cpp
 )
 
+if(NOT WIN32)
+    find_package(Threads REQUIRED)
+    target_link_libraries(aegis PRIVATE Threads::Threads)
+endif()
+
 if(WIN32)
     target_link_libraries(aegis PRIVATE user32 shell32 ole32 uuid)
 elseif(APPLE)

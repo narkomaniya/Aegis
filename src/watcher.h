@@ -63,6 +63,7 @@ private:
     std::vector<std::wstring> dirs_;   // корневые папки наблюдения
     std::vector<std::thread> threads_;
     std::atomic<bool> running_{false};
+    std::atomic<bool> loopDone_{true};  // macOS: поток дошёл до выхода (синхронизация stop)
 };
 
 } // namespace ae

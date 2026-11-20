@@ -163,12 +163,14 @@ static std::string xmlEsc(const std::string& s) {
     return o;
 }
 
-// Экранирование значения Exec= по спецификации Desktop Entry.
+// Экранирование значения Exec= по спецификации Desktop Entry:
+// спецсимволы оболочки и разделители полей обязаны быть с backslash.
 static std::string desktopEsc(const std::string& s) {
+    static const std::string kSpecial = "\\\"'`$;|&<>~*?#() \t\n";
     std::string o;
     o.reserve(s.size());
     for (char c : s) {
-        if (c == '\\' || c == '"' || c == '`' || c == '$') o += '\\';
+        if (kSpecial.find(c) != std::string::npos) o += '\\';
         o += c;
     }
     return o;

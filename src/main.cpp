@@ -1088,16 +1088,17 @@ static void foldersMenu(Settings& settings) {
         } else if (line == L"r" || line == L"R") {
             console(L"  Folder number to remove:"); prompt(L"  > ");
             std::wstring n; if (!std::getline(std::wcin, n)) return; n=trimW(n);
-            size_t num=0; parseIndex(n, num);
+            size_t num=0; bool okn = parseIndex(n, num);
             if (settings.watchFolders.empty()) settings.watchFolders = defaultWatchFolders();
-            if (num>=1 && num<=settings.watchFolders.size()) { settings.watchFolders.erase(settings.watchFolders.begin()+num-1); saveSettings(settings); ok(L"Removed."); }
+            if (okn && num>=1 && num<=settings.watchFolders.size()) { settings.watchFolders.erase(settings.watchFolders.begin()+num-1); saveSettings(settings); ok(L"Removed."); }
+            else warn(L"Invalid folder number.");
             waitEnter();
         } else if (line == L"s" || line == L"S") {
             console(L"  Folder number:"); prompt(L"  > ");
             std::wstring n; if (!std::getline(std::wcin, n)) return; n=trimW(n);
-            size_t num=0; parseIndex(n, num);
+            size_t num=0; bool okn = parseIndex(n, num);
             if (settings.watchFolders.empty()) settings.watchFolders = defaultWatchFolders();
-            if (num>=1 && num<=settings.watchFolders.size()) {
+            if (okn && num>=1 && num<=settings.watchFolders.size()) {
                 console(L"  Sensitivity for this folder: 0=global, 1=low, 2=medium, 3=high");
                 prompt(L"  > ");
                 std::wstring c; if(!std::getline(std::wcin,c)) return; c=trimW(c);
@@ -1107,6 +1108,7 @@ static void foldersMenu(Settings& settings) {
                 else if(c==L"3") settings.watchFolders[num-1].sensitivity = 2;
                 saveSettings(settings); ok(L"Updated."); 
             }
+            else warn(L"Invalid folder number.");
             waitEnter();
         } else if (line == L"d" || line == L"D") {
             settings.watchFolders.clear(); saveSettings(settings); ok(L"Reset to defaults."); waitEnter();
@@ -1471,12 +1473,22 @@ static int interactiveMenu() {
 }
 
 int main(int argc, char** argv) {
-#ifdef _WIN32
-    setupConsole();
-#endif
+    setupConsole();   // и на POSIX тоже: иначе wcout/wcin в локали "C" рвутся на не-ASCII
 
     std::vector<std::wstring> args;
+#ifdef _WIN32
+    // char** argv использует CP_ACP и превращает не-ASCII пути в '?'.
+    // Берём исходную Unicode-командную строку из Windows.
+    int wargc = 0;
+    LPWSTR* wargv = CommandLineToArgvW(GetCommandLineW(), &wargc);
+    if (wargv) {
+        for (int i = 1; i < wargc; ++i) args.push_back(wargv[i]);
+        LocalFree(wargv);
+    }
+    (void)argc; (void)argv;
+#else
     for (int i = 1; i < argc; ++i) args.push_back(toW(argv[i]));
+#endif
 
     ae::cleanupOldBinary();
 

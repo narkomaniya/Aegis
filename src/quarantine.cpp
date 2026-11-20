@@ -29,7 +29,7 @@ static std::wstring utf8ToWide(const std::string& s) {
     return w;
 #else
     try {
-        std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> conv;
+        std::wstring_convert<std::codecvt_utf8<wchar_t>> conv;
         return conv.from_bytes(s);
     } catch (...) {
         return std::wstring(s.begin(), s.end());
@@ -109,7 +109,12 @@ bool Quarantine::moveIn(const std::wstring& full, const std::wstring& reason, bo
                                 s.data(), n, nullptr, nullptr);
             return s;
 #else
-            return std::string(w.begin(), w.end());
+            try {
+                std::wstring_convert<std::codecvt_utf8<wchar_t>> conv;
+                return conv.to_bytes(w);
+            } catch (...) {
+                return std::string(w.begin(), w.end());
+            }
 #endif
         };
         meta << "Aegis quarantine record\n";
@@ -176,7 +181,9 @@ std::vector<std::wstring> Quarantine::list() const {
     std::vector<std::wstring> out;
     std::error_code ec;
     for (const auto& e : fs::directory_iterator(fs::path(root_), ec)) {
-        if (e.is_directory()) out.push_back(e.path().filename().wstring());
+        std::error_code isDirEc;
+        if (e.is_directory(isDirEc) && !isDirEc)
+            out.push_back(e.path().filename().wstring());
     }
     return out;
 }
@@ -191,7 +198,9 @@ std::vector<Quarantine::Record> Quarantine::records() const {
     std::error_code ec;
 
     for (const auto& e : fs::directory_iterator(fs::path(root_), ec)) {
-        if (ec || !e.is_directory()) continue;
+        if (ec) break;
+        std::error_code isDirEc;
+        if (!e.is_directory(isDirEc) || isDirEc) continue;
 
         Record r;
         r.folder = e.path().wstring();
@@ -255,6 +264,19 @@ bool Quarantine::restore(const Record& rec) {
     if (rec.from.empty() || rec.from.find_first_of(L"\r\n\t") != std::wstring::npos) return false;
     fs::path dest = fs::path(rec.from);
     if (!dest.is_absolute()) return false;
+
+    // Подменённый meta.txt не должен возвращать файл обратно в сам карантин:
+    // иначе rename в тот же payload ничего не сделает, а запись будет удалена.
+    {
+        std::error_code absEc;
+        fs::path qRoot = fs::absolute(fs::path(root_), absEc).lexically_normal();
+        fs::path dAbs = fs::absolute(dest, absEc).lexically_normal();
+        if (absEc) return false;
+        std::wstring q = qRoot.wstring();
+        std::wstring d = dAbs.wstring();
+        std::wstring prefix = q + std::wstring(1, fs::path::preferred_separator);
+        if (d == q || d.rfind(prefix, 0) == 0) return false;
+    }
 
     // путь мог "сдохнуть" с момента карантина (файлы уехали в OneDrive и т.п.) —
     // пересоздаём родителя, иначе rename падает с Access denied

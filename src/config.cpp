@@ -107,8 +107,15 @@ Settings loadSettings() {
     std::ifstream f(fs::path(configPath()), std::ios::binary);
     if (!f) return s;
     std::string line;
+    bool firstLine = true;
     while (std::getline(f, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (firstLine) {
+            firstLine = false;
+            if (line.size() >= 3 && (unsigned char)line[0] == 0xEF &&
+                (unsigned char)line[1] == 0xBB && (unsigned char)line[2] == 0xBF)
+                line.erase(0, 3);   // BOM от Notepad не должен съедать первую настройку
+        }
         if (line.rfind("sensitivity=", 0) == 0) {
             int v = parseSens(line.substr(12));
             if (v >= 0) s.sensitivity = v;

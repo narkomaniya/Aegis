@@ -133,8 +133,15 @@ ModManifest loadModManifest(const fs::path& p, const Settings& settings) {
     std::ifstream f(p, std::ios::binary);
     if (!f) return m;
     std::string line;
+    bool firstLine = true;
     while (std::getline(f, line)) {
         if (!line.empty() && line.back()=='\r') line.pop_back();
+        if (firstLine) {
+            firstLine = false;
+            if (line.size() >= 3 && (unsigned char)line[0] == 0xEF &&
+                (unsigned char)line[1] == 0xBB && (unsigned char)line[2] == 0xBF)
+                line.erase(0, 3);   // BOM в манифесте не должен терять первое поле
+        }
         std::string t = line;
         // trim
         while (!t.empty() && (t.front()==' '||t.front()=='\t')) t.erase(t.begin());

@@ -94,7 +94,9 @@ static std::wstring fileOwnerWin(const std::wstring& full) {
     const DWORD pid = *reinterpret_cast<const DWORD*>(rec);
 
     wchar_t app[257] = {};            // +1 гарантированный NUL
-    std::memcpy(app, rec + 12, 255 * sizeof(wchar_t));
+    // RM_PROCESS_INFO: Process(12) + ApplicationType(4) + Reason(4)
+    // + bApplicationTerminated(4), имя приложения — со смещения 24.
+    std::memcpy(app, rec + 24, 255 * sizeof(wchar_t));
     app[255] = L'\0';
     std::wstring name(app);
     if (name.empty()) name = L"unknown process";

@@ -31,6 +31,8 @@
 #include <cerrno>
 #include <chrono>
 #include <cstring>
+#include <locale>
+#include <codecvt>
 #endif
 
 namespace fs = std::filesystem;
@@ -47,6 +49,7 @@ bool Watcher::add(const std::wstring& dir) {
 
 void Watcher::start() {
     running_ = true;
+    loopDone_ = false;
 #ifdef _WIN32
     // Один общий manual-reset event: stop() взводит его, все потоки просыпаются.
     {
@@ -70,6 +73,8 @@ void Watcher::start() {
 #endif
     if (!dirs_.empty())
         threads_.emplace_back(&Watcher::loop, this, 0);
+    else
+        loopDone_ = true;
 #endif
 }
 
@@ -78,15 +83,15 @@ void Watcher::stop() {
 #ifdef _WIN32
     if (stopEvent_) SetEvent(static_cast<HANDLE>(stopEvent_));
 #elif defined(__APPLE__)
-    // CFRunLoopStop потокобезопасен. runloop_ может ещё не быть установлен —
-    // подождём немного, чтобы не пропустить старт цикла.
-    for (int i = 0; i < 300; ++i) {
+    // CFRunLoopStop потокобезопасен, но если вызвать его до CFRunLoopRun(),
+    // остановка теряется. Повторяем до тех пор, пока поток реально не вышел.
+    for (int i = 0; i < 500 && !loopDone_.load(); ++i) {
         CFRunLoopRef rl = nullptr;
         {
             std::lock_guard<std::mutex> lock(supMu_);
             rl = runloop_;
         }
-        if (rl) { CFRunLoopStop(rl); break; }
+        if (rl) CFRunLoopStop(rl);
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 #else
@@ -219,6 +224,8 @@ void Watcher::loop(int index) {
 
             FileEvent ev;
             ev.dir = dir;
+            ev.action = EventAction::Modified;   // поле всегда определено, даже для неизвестного Action
+            bool dispatch = true;
             switch (fni->Action) {
                 case FILE_ACTION_ADDED:
                     ev.action = EventAction::Created; ev.name = name; break;
@@ -227,7 +234,7 @@ void Watcher::loop(int index) {
                 case FILE_ACTION_REMOVED:
                     ev.action = EventAction::Deleted; ev.name = name; break;
                 case FILE_ACTION_RENAMED_OLD_NAME:
-                    pendingOld = name; break;  // пара: старое имя ждёт новое
+                    pendingOld = name; dispatch = false; break;  // пара: старое имя ждёт новое
                 case FILE_ACTION_RENAMED_NEW_NAME:
                     ev.action = EventAction::Renamed;
                     ev.name = name;
@@ -235,10 +242,11 @@ void Watcher::loop(int index) {
                     pendingOld.clear();
                     break;
                 default:
-                    break;  // неизвестное действие — пропускаем
+                    dispatch = false;  // неизвестное действие — не отдаём неинициализированное событие
+                    break;
             }
 
-            if (fni->Action != FILE_ACTION_RENAMED_OLD_NAME) {
+            if (dispatch) {
                 if (!running_) break;
                 cb_(ev);
             }
@@ -258,7 +266,7 @@ void Watcher::loop(int index) {
 
 static std::string toUtf8(const std::wstring& w) {
     try {
-        std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> conv;
+        std::wstring_convert<std::codecvt_utf8<wchar_t>> conv;
         return conv.to_bytes(w);
     } catch (...) {
         return std::string(w.begin(), w.end());
@@ -267,7 +275,7 @@ static std::string toUtf8(const std::wstring& w) {
 
 static std::wstring fromUtf8(const std::string& s) {
     try {
-        std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> conv;
+        std::wstring_convert<std::codecvt_utf8<wchar_t>> conv;
         return conv.from_bytes(s);
     } catch (...) {
         return std::wstring(s.begin(), s.end());
@@ -326,6 +334,8 @@ void Watcher::fsEventsCallback(ConstFSEventStreamRef /*stream*/,
 }
 
 void Watcher::loop(int /*index*/) {
+    // Гарантированно помечаем выход из потока, даже при раннем return.
+    struct DoneGuard { std::atomic<bool>& f; ~DoneGuard() { f.store(true); } } doneGuard{loopDone_};
     if (dirs_.empty()) return;
 
     CFMutableArrayRef paths = CFArrayCreateMutable(
@@ -406,6 +416,17 @@ void Watcher::loop(int /*index*/) {
 }
 
 #else  // ====================== POSIX (Linux) ======================
+
+// Имена из inotify — байты UTF-8. Приводим к настоящим wchar, как main.cpp::toW(),
+// иначе путь события не совпадёт с путём из настроек/карантина.
+static std::wstring utf8ToWide(const std::string& s) {
+    try {
+        std::wstring_convert<std::codecvt_utf8<wchar_t>> conv;
+        return conv.from_bytes(s);
+    } catch (...) {
+        return std::wstring(s.begin(), s.end());
+    }
+}
 
 // Рекурсивно добавить watch на папку и все её подпапки
 static void addRecursive(int fd, std::map<int, std::wstring>& wd2dir,
@@ -519,7 +540,7 @@ void Watcher::loop(int index) {
             std::string name(ev->len ? ev->name : "");
             auto itDir = wd2dir.find(ev->wd);
             std::wstring dir = (itDir != wd2dir.end()) ? itDir->second : L"";
-            std::wstring wname(name.begin(), name.end());
+            std::wstring wname = utf8ToWide(name);
 
             FileEvent fe;
             fe.dir = dir;
@@ -540,15 +561,29 @@ void Watcher::loop(int index) {
             else if (ev->mask & IN_MOVED_TO) {
                 auto pit = pending.find(ev->cookie);
                 fe.action = EventAction::Renamed;
+                bool movedDir = false;
+                std::error_code ec;
+                fs::path newPath = fs::path(dir) / fs::path(wname);
+                const bool isDir = fs::is_directory(newPath, ec) && !ec;
                 if (pit != pending.end()) {
                     fe.oldName = pit->second.ev.oldName;
+                    if (isDir && !fe.oldName.empty()) {
+                        // дескрипторы inotify остаются теми же — меняем только путь в карте
+                        std::wstring oldFull = (fs::path(pit->second.ev.dir) / fs::path(fe.oldName)).wstring();
+                        std::wstring newFull = newPath.wstring();
+                        for (auto& kv : wd2dir) {
+                            if (kv.second == oldFull) kv.second = newFull;
+                            else if (kv.second.rfind(oldFull + L"/", 0) == 0)
+                                kv.second = newFull + kv.second.substr(oldFull.size());
+                        }
+                        movedDir = true;
+                    }
                     pending.erase(pit);
                 }
                 emit(fe);
                 // если переименовали в папку — начинаем и её наблюдать
-                std::error_code ec;
-                if (fs::is_directory(fs::path(dir) / fs::path(wname), ec))
-                    addRecursive(fd, wd2dir, dir + L"/" + wname);
+                if (isDir && !movedDir)
+                    addRecursive(fd, wd2dir, newPath.wstring());
             }
             else if (ev->mask & IN_CREATE) {
                 // новая папка => наблюдаем и её тоже (рекурсивно)
