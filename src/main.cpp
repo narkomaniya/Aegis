@@ -61,6 +61,7 @@ namespace fs = std::filesystem;
 using namespace ae;
 
 static void secretCat();   // скрытая команда (определена ниже)
+static bool isCatCommand(const std::wstring& s);
 
 #ifdef _WIN32
 static std::wstring toW(const std::string& s) {
@@ -1371,7 +1372,7 @@ static int runWatch(const Settings& inSettings, bool fromMenu, std::vector<std::
             else if (low == L"restore") { printRecordList(q); console(L"  to restore: restore <number>"); }
             else if (low.rfind(L"restore ", 0) == 0) { doRestoreByNumber(q, &engine, trimW(line.substr(8))); }
             else if (low == L"help") { console(L""); printHelp(); }
-            else if (low == L"pspsps") secretCat();
+            else if (isCatCommand(low)) secretCat();
             else if (!low.empty()) { console(L"unknown command: try help"); }
         }
         if (stop) break;
@@ -1424,32 +1425,69 @@ static void watchMenu(Settings& settings) {
 
 // Секретная команда: её нет в help. Кот приходит на "pspsps" (так зовут кота)
 // и живёт ровно 10 секунд, виляя хвостом. Ничего не трогает в системе.
+
+// Принимаем разные написания: регистронезависимо, русскую раскладку
+// (p -> з, s -> ы) и пару «человеческих» слов — чтобы секрет точно сработал.
+static bool isCatCommand(const std::wstring& s) {
+    const std::wstring t = lowerW(s);
+    return t == L"pspsps" || t == L"pspsps!" || t == L"psps" ||
+           t == L"p-s-p-s" || t == L"meow" || t == L"cat" ||
+           t == L"kitten" || t == L"мяу" || t == L"зызызы";
+}
+
 static void secretCat() {
-    static const wchar_t* kFrames[] = {
-        L"  /\\_/\\\n ( o.o )~~~\n  > ^ <   ~",
-        L"  /\\_/\\\n ( o.o )  /\n  > ^ < /  ",
-        L"  /\\_/\\\n ( -.- ) \\\n  > ^ <  \\ ",
-        L"  /\\_/\\\n ( o.o )~\n  > ^ <~~ ",
+    static const wchar_t* kArt[4][3] = {
+        { L"  /\\_/\\",  L" ( o.o )~~~", L"  > ^ <   ~" },
+        { L"  /\\_/\\",  L" ( o.o )  /", L"  > ^ < /  " },
+        { L"  /\\_/\\",  L" ( -.- ) \\", L"  > ^ <  \\ " },
+        { L"  /\\_/\\",  L" ( o.o )~",   L"  > ^ <~~ "  },
     };
+    std::wcout.clear();   // сбрасываем failbit от возможного прошлого вывода
+
     bool tty = false;
 #ifdef _WIN32
-    tty = _isatty(_fileno(stdout)) != 0;
+    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    CONSOLE_SCREEN_BUFFER_INFO csbi{};
+    const bool canMove = hOut != INVALID_HANDLE_VALUE &&
+                         GetConsoleScreenBufferInfo(hOut, &csbi) != 0;
+    const COORD home = canMove ? csbi.dwCursorPosition : COORD{0, 0};
+    tty = canMove;
 #else
     tty = isatty(1) != 0;
 #endif
-    const auto start = std::chrono::steady_clock::now();
+
+    const auto finishAt = std::chrono::steady_clock::now() + std::chrono::seconds(10);
     size_t frame = 0;
-    while (std::chrono::steady_clock::now() - start < std::chrono::seconds(10)) {
+    while (std::chrono::steady_clock::now() < finishAt) {
+        const auto& art = kArt[frame % 4];
+#ifdef _WIN32
+        if (canMove) {
+            SetConsoleCursorPosition(hOut, home);
+            std::wcout << art[0] << L"\r\n" << art[1] << L"\r\n" << art[2];
+        } else {
+            std::wcout << L"\r" << art[0] << L"\r\n" << art[1] << L"\r\n" << art[2];
+        }
+#else
         if (tty)
-            std::wcout << L"\r" << kFrames[frame % 4] << L"\033[2A";
+            std::wcout << (frame ? L"\033[2A\r" : L"")
+                       << art[0] << L"\r\n" << art[1] << L"\r\n" << art[2];
         else
-            std::wcout << kFrames[frame % 4] << L"\n\n";
+            std::wcout << art[0] << L"\r\n" << art[1] << L"\r\n" << art[2] << L"\r\n\r\n";
+#endif
         std::wcout.flush();
         ++frame;
-        std::this_thread::sleep_for(std::chrono::milliseconds(tty ? 120 : 600));
+        std::this_thread::sleep_for(std::chrono::milliseconds(tty ? 110 : 400));
     }
-    if (tty) std::wcout << L"\r\033[2B";
-    std::wcout << kFrames[0] << L"\n   ...mrrp.\n";
+
+    // Оставляем кота на экране и дописываем финальную фразу.
+#ifdef _WIN32
+    if (canMove) SetConsoleCursorPosition(hOut, home);
+    else std::wcout << L"\r";
+#else
+    if (tty) std::wcout << L"\033[2A\r";
+#endif
+    std::wcout << kArt[0][0] << L"\r\n" << kArt[0][1] << L"\r\n" << kArt[0][2]
+               << L"\r\n   ...mrrp.\n";
     std::wcout.flush();
 }
 
@@ -1501,7 +1539,7 @@ static int interactiveMenu() {
         else if (low == L"9" || low == L"update") updateMenu();
         else if (low == L"10" || low == L"autostart" || low == L"background") autostartMenu();
         else if (low == L"h" || low == L"help") helpScreen();
-        else if (low == L"pspsps") secretCat();
+        else if (isCatCommand(low)) secretCat();
         else if (low == L"0" || low == L"q" || low == L"exit") {
             clearScreen(); banner(); ok(L"Bye!"); return 0;
         }
@@ -1531,7 +1569,7 @@ int main(int argc, char** argv) {
 
     if (args.empty()) return interactiveMenu();
     if (args[0] == L"help" || args[0] == L"--help" || args[0] == L"/?") { banner(); printHelp(); return 0; }
-    if (args[0] == L"pspsps") { secretCat(); return 0; }
+    if (isCatCommand(args[0])) { secretCat(); return 0; }
     if (args[0] == L"status") {
         banner();
         Settings s = loadSettings();
