@@ -68,13 +68,24 @@ if [ -n "$tag" ]; then
 
     # Optional v6.0: bot-approved mods published as release assets.
     # Every downloaded asset is verified against SHA256SUMS.txt as well.
-    mod_dir="${HOME:-.}/.aegis/mods"
+    aegis_home="${HOME:-.}/.aegis"
+    mod_dir="$aegis_home/mods"
+    receipts_dir="$aegis_home/mods-approved"
     awk 'NF>=2 {n=$2; sub(/^\*/,"",n); if (n ~ /\.(aegismod|bot\.txt)$/) print $1, n}' "$tmp/SHA256SUMS.txt" | while read -r mh mn; do
         if curl -fsSL --max-time 60 -o "$tmp/$mn" "$DL/$tag/$mn"; then
-            ma=$(sha256sum "$tmp/$mn" 2>/dev/null | awk '{print tolower($1)}')
+            if command -v sha256sum >/dev/null 2>&1; then
+                ma=$(sha256sum "$tmp/$mn" 2>/dev/null | awk '{print tolower($1)}')
+            else
+                ma=$(shasum -a 256 "$tmp/$mn" 2>/dev/null | awk '{print tolower($1)}')
+            fi
             if [ -n "$ma" ] && [ "$ma" = "$(echo "$mh" | tr 'A-Z' 'a-z')" ]; then
-                mkdir -p "$mod_dir"
-                cp -f "$tmp/$mn" "$mod_dir/$mn"
+                # *.bot.txt are bot receipts, not mod manifests.
+                case "$mn" in
+                    *.bot.txt) target_dir="$receipts_dir" ;;
+                    *) target_dir="$mod_dir" ;;
+                esac
+                mkdir -p "$target_dir"
+                cp -f "$tmp/$mn" "$target_dir/$mn"
                 echo "Aegis: installed mod asset $mn"
             else
                 echo "Aegis: mod asset $mn failed SHA256 check — skipped" >&2

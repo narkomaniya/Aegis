@@ -22,6 +22,7 @@
 - Windows watcher keeps a queue of pending rename pairs and warns on buffer overflow; Linux warns when `inotify_add_watch` fails.
 - Helper folders now derive from the same config root (fixes non-ASCII Windows user names), quarantine records are sorted for stable numbering.
 - `emergencyActive()` expires on query, not only on the next file event.
+- Hotfix: `update -y` parses GitHub's compact `"tag_name":"v6.0"` JSON correctly; bot `.bot.txt` receipts are no longer treated as mods; both installers put mods and receipts into `~/.aegis/mods` and `~/.aegis/mods-approved` respectively.
 
 ### Known limitations
 - `.github/workflows/mod-verify.yml` still needs `-Recurse` on the Windows `Get-ChildItem` line; the available token cannot edit workflow files.

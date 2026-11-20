@@ -147,24 +147,27 @@ static std::wstring wideOfUtf8(const std::string& s) {
 
 // Вытаскиваем "tag_name" из JSON релиза
 static std::wstring parseTag(const std::string& json) {
-    const char key[] = "\"tag_name\":";
-    // GitHub returns an ARRAY of releases: take the first top-level tag_name.
-    // A naive find() could match `"tag_name":` inside release notes, so we
-    // validate that the value actually looks like a version tag.
+    const std::string key = "\"tag_name\":";
+    // The key already contains the colon. Searching for another ':' after it
+    // breaks on GitHub's compact JSON ("tag_name":"v6.0") and jumps to the
+    // next field. Read the quoted value directly and validate that it really
+    // looks like a version tag (release notes may mention tag_name too).
     std::string::size_type from = 0;
     while (true) {
-        std::string::size_type k = json.find(key, from);
+        const std::string::size_type k = json.find(key, from);
         if (k == std::string::npos) return L"";
-        const std::string::size_type colon = json.find(':', k + sizeof(key) - 1);
-        if (colon == std::string::npos) return L"";
-        const std::string::size_type q1 = json.find('"', colon);
-        if (q1 == std::string::npos || q1 - colon > 8) { from = k + 1; continue; }
-        const std::string::size_type q2 = json.find('"', q1 + 1);
-        if (q2 == std::string::npos) return L"";
-        std::string tag = json.substr(q1 + 1, q2 - q1 - 1);
-        if (tag.size() >= 2 && (tag[0] == 'v' || tag[0] == 'V') &&
-            tag[1] >= '0' && tag[1] <= '9')
-            return wideOfUtf8(tag);
+        std::string::size_type p = k + key.size();
+        while (p < json.size() && std::isspace(static_cast<unsigned char>(json[p]))) ++p;
+        if (p < json.size() && json[p] == '"') {
+            ++p;
+            const std::string::size_type q2 = json.find('"', p);
+            if (q2 != std::string::npos) {
+                const std::string tag = json.substr(p, q2 - p);
+                if (tag.size() >= 2 && (tag[0] == 'v' || tag[0] == 'V') &&
+                    tag[1] >= '0' && tag[1] <= '9')
+                    return wideOfUtf8(tag);
+            }
+        }
         from = k + 1; // e.g. a mention in release notes — keep looking
     }
 }

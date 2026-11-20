@@ -49,15 +49,19 @@ try {
         # Every downloaded asset is verified against the same checksum file.
         # Aegis reads mods from ~/.aegis/mods, NOT from the binary install dir.
         $modHome = if ($env:USERPROFILE) { $env:USERPROFILE } else { [Environment]::GetFolderPath('UserProfile') }
-        $modsDest = Join-Path (Join-Path $modHome '.aegis') 'mods'
+        $aegisHome = Join-Path $modHome '.aegis'
+        $modsDest = Join-Path $aegisHome 'mods'
+        $receiptsDest = Join-Path $aegisHome 'mods-approved'
         foreach ($modAsset in ($rel.assets | Where-Object { $_.name -like '*.aegismod' -or $_.name -like '*.bot.txt' })) {
             try {
                 if (-not $sumsMap.ContainsKey($modAsset.name)) { throw 'no checksum in SHA256SUMS.txt' }
                 Invoke-WebRequest -UseBasicParsing -Uri $modAsset.browser_download_url -OutFile (Join-Path $tmp $modAsset.name) -Headers @{ 'User-Agent' = 'aegis-installer' }
                 $modHash = (Get-FileHash -Algorithm SHA256 (Join-Path $tmp $modAsset.name)).Hash.ToLowerInvariant()
                 if ($modHash -ne $sumsMap[$modAsset.name]) { throw "SHA256 mismatch for $($modAsset.name)" }
-                New-Item -ItemType Directory -Path $modsDest -Force | Out-Null
-                Copy-Item -Force (Join-Path $tmp $modAsset.name) (Join-Path $modsDest $modAsset.name)
+                # *.bot.txt are bot receipts (in ~/.aegis/mods-approved), not mods.
+                $modTargetDir = if ($modAsset.name -like '*.bot.txt') { $receiptsDest } else { $modsDest }
+                New-Item -ItemType Directory -Path $modTargetDir -Force | Out-Null
+                Copy-Item -Force (Join-Path $tmp $modAsset.name) (Join-Path $modTargetDir $modAsset.name)
                 Write-Host "Aegis: installed mod asset $($modAsset.name)"
             } catch {
                 Write-Host "Aegis: optional mod asset $($modAsset.name) skipped: $($_.Exception.Message)"

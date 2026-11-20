@@ -183,6 +183,10 @@ std::vector<ModManifest> scanMods(const Settings& settings) {
         if (ec) break;
         std::error_code efile;
         if (!e.is_regular_file(efile) || efile) continue;
+        const std::wstring fname = lowerWLocal(e.path().filename().wstring());
+        // Bot receipts are verification metadata, not mods — never list or
+        // validate them as manifests (otherwise Doctor reports false alarms).
+        if (fname.size() >= 8 && fname.compare(fname.size() - 8, 8, L".bot.txt") == 0) continue;
         auto ext = lowerWLocal(e.path().extension().wstring());
         if (ext == L".aegismod" || ext == L".mod" || ext == L".txt") {
             out.push_back(loadModManifest(e.path(), settings));
