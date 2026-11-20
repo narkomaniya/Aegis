@@ -47,7 +47,9 @@ try {
 
         # Optional v6.0: install bot-approved mods published as release assets.
         # Every downloaded asset is verified against the same checksum file.
-        $modsDest = Join-Path $dest 'mods'
+        # Aegis reads mods from ~/.aegis/mods, NOT from the binary install dir.
+        $modHome = if ($env:USERPROFILE) { $env:USERPROFILE } else { [Environment]::GetFolderPath('UserProfile') }
+        $modsDest = Join-Path (Join-Path $modHome '.aegis') 'mods'
         foreach ($modAsset in ($rel.assets | Where-Object { $_.name -like '*.aegismod' -or $_.name -like '*.bot.txt' })) {
             try {
                 if (-not $sumsMap.ContainsKey($modAsset.name)) { throw 'no checksum in SHA256SUMS.txt' }
