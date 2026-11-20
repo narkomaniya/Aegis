@@ -1,3 +1,6 @@
 build/
 *.log
 .vscode/ipch/
+
+# watcher canary, created at runtime by smoke tests
+.aegis-canary.txt
