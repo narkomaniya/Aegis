@@ -12,6 +12,7 @@ $repo = 'narkomaniya/Aegis'
 $asset = 'aegis.exe'
 $dest = if ($env:AEGIS_INSTALL_DIR) { $env:AEGIS_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'Aegis' }
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ("aegis-install-" + [guid]::NewGuid().ToString('N'))
+$staged = $null
 New-Item -ItemType Directory -Path $tmp -Force | Out-Null
 
 try {
@@ -27,25 +28,37 @@ try {
         Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile (Join-Path $tmp $asset) -Headers @{ 'User-Agent' = 'aegis-installer' }
 
         # v6.0: SHA256 is MANDATORY for release downloads (same policy as `aegis update`).
+        # GitHub serves this file as application/octet-stream, so Invoke-WebRequest
+        # returns Byte[] in Windows PowerShell — always save it and read it as text.
         $sumsUrl = "https://github.com/$repo/releases/download/$tag/SHA256SUMS.txt"
-        $sums = (Invoke-WebRequest -UseBasicParsing -Uri $sumsUrl -Headers @{ 'User-Agent' = 'aegis-installer' }).Content
-        $line = $sums -split "`n" | Where-Object { $_ -match "\s$([regex]::Escape($asset))\s*$" } | Select-Object -First 1
-        if (-not $line) { throw "SHA256SUMS.txt has no entry for $asset" }
-        $expected = ($line -split '\s+')[0].ToLowerInvariant()
+        $sumsPath = Join-Path $tmp 'SHA256SUMS.txt'
+        Invoke-WebRequest -UseBasicParsing -Uri $sumsUrl -OutFile $sumsPath -Headers @{ 'User-Agent' = 'aegis-installer' }
+        $sumsMap = @{}
+        foreach ($sumLine in [IO.File]::ReadAllLines($sumsPath)) {
+            if ($sumLine -match '^\s*([0-9a-fA-F]{64})\s+\*?(.+?)\s*$') {
+                $sumsMap[[IO.Path]::GetFileName($Matches[2].Trim())] = $Matches[1].ToLowerInvariant()
+            }
+        }
+        if (-not $sumsMap.ContainsKey($asset)) { throw "SHA256SUMS.txt has no entry for $asset" }
+        $expected = $sumsMap[$asset]
         $actual = (Get-FileHash -Algorithm SHA256 (Join-Path $tmp $asset)).Hash.ToLowerInvariant()
         if ($expected -ne $actual) { throw "SHA256 mismatch: expected $expected, got $actual" }
         Write-Host 'Aegis: SHA256 verified.'
 
         # Optional v6.0: install bot-approved mods published as release assets.
+        # Every downloaded asset is verified against the same checksum file.
         $modsDest = Join-Path $dest 'mods'
         foreach ($modAsset in ($rel.assets | Where-Object { $_.name -like '*.aegismod' -or $_.name -like '*.bot.txt' })) {
             try {
+                if (-not $sumsMap.ContainsKey($modAsset.name)) { throw 'no checksum in SHA256SUMS.txt' }
                 Invoke-WebRequest -UseBasicParsing -Uri $modAsset.browser_download_url -OutFile (Join-Path $tmp $modAsset.name) -Headers @{ 'User-Agent' = 'aegis-installer' }
+                $modHash = (Get-FileHash -Algorithm SHA256 (Join-Path $tmp $modAsset.name)).Hash.ToLowerInvariant()
+                if ($modHash -ne $sumsMap[$modAsset.name]) { throw "SHA256 mismatch for $($modAsset.name)" }
                 New-Item -ItemType Directory -Path $modsDest -Force | Out-Null
                 Copy-Item -Force (Join-Path $tmp $modAsset.name) (Join-Path $modsDest $modAsset.name)
                 Write-Host "Aegis: installed mod asset $($modAsset.name)"
             } catch {
-                Write-Host "Aegis: optional mod asset $($modAsset.name) skipped."
+                Write-Host "Aegis: optional mod asset $($modAsset.name) skipped: $($_.Exception.Message)"
             }
         }
     } else {
@@ -62,11 +75,15 @@ try {
 
     New-Item -ItemType Directory -Path $dest -Force | Out-Null
     $target = Join-Path $dest 'aegis.exe'
-    Copy-Item -Force (Join-Path $tmp $asset) $target
+    # Stage next to the target, then rename: the running copy is never truncated.
+    $staged = Join-Path $dest 'aegis.exe.new'
+    Copy-Item -Force (Join-Path $tmp $asset) $staged
 
     # Файл, скачанный из интернета, помечается Mark-of-the-Web: без снятия
     # метки Windows/SmartScreen может отказаться его запускать.
-    Unblock-File -Path $target -ErrorAction SilentlyContinue
+    Unblock-File -Path $staged -ErrorAction SilentlyContinue
+    Move-Item -Force -LiteralPath $staged -Destination $target
+    $staged = $null
 
     # Добавляем папку в PATH пользователя, чтобы команда `aegis` работала
     # в любом новом терминале (в текущем сеансе — сразу тоже).
@@ -86,5 +103,6 @@ try {
     Write-Host 'Run: aegis help'
     Write-Host "(in this terminal: `"$target`" help)"
 } finally {
+    if ($staged) { Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue }
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
 }
