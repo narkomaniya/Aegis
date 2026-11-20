@@ -6,6 +6,7 @@
 # проверяет SHA256 (если есть SHA256SUMS.txt) и кладёт exe в
 # %LOCALAPPDATA%\Aegis\aegis.exe (можно переопределить через $env:AEGIS_INSTALL_DIR).
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 
 $repo = 'narkomaniya/Aegis'
 $asset = 'aegis.exe'
@@ -23,11 +24,11 @@ try {
     if ($tag) {
         $url = "https://github.com/$repo/releases/download/$tag/$asset"
         Write-Host "Aegis: downloading $asset from $tag ..."
-        Invoke-WebRequest -Uri $url -OutFile (Join-Path $tmp $asset) -Headers @{ 'User-Agent' = 'aegis-installer' }
+        Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile (Join-Path $tmp $asset) -Headers @{ 'User-Agent' = 'aegis-installer' }
 
         try {
             $sumsUrl = "https://github.com/$repo/releases/download/$tag/SHA256SUMS.txt"
-            $sums = (Invoke-WebRequest -Uri $sumsUrl -Headers @{ 'User-Agent' = 'aegis-installer' }).Content
+            $sums = (Invoke-WebRequest -UseBasicParsing -Uri $sumsUrl -Headers @{ 'User-Agent' = 'aegis-installer' }).Content
             $line = $sums -split "`n" | Where-Object { $_ -match "\s$([regex]::Escape($asset))\s*$" } | Select-Object -First 1
             if ($line) {
                 $expected = ($line -split '\s+')[0].ToLowerInvariant()
