@@ -23,6 +23,7 @@
 - Helper folders now derive from the same config root (fixes non-ASCII Windows user names), quarantine records are sorted for stable numbering.
 - `emergencyActive()` expires on query, not only on the next file event.
 - Hotfix: `update -y` parses GitHub's compact `"tag_name":"v6.0"` JSON correctly; bot `.bot.txt` receipts are no longer treated as mods; both installers put mods and receipts into `~/.aegis/mods` and `~/.aegis/mods-approved` respectively.
+- Hotfix: animal animations stay truly in-place — console rows are reserved before drawing (no upward drift when the buffer scrolls), stdout is synced before direct console writes, and ConPTY/pseudo-terminals get an ANSI clear-line fallback instead of relying on `\r` alone.
 
 ## v5.0 — Biggest update in the project's history (Mod Platform, Automatic Mod Verification, Quality Update)
 

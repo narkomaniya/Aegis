@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <iostream>
 #include <string>
 #include <thread>
@@ -16,6 +17,7 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <io.h>
 #else
 #include <unistd.h>
 #endif
@@ -167,20 +169,40 @@ bool isZooCommand(const std::wstring& text) {
 
 void playAnimal(const Animal& animal, int seconds) {
     std::wcout.clear();
-    const size_t width = frameWidth(animal);
+    // Aegis prints banners/menus through std::wcout. Sync it before writing
+    // straight to the console handle: otherwise buffered text can be flushed
+    // *after* the animation and appear above it (looks like bottom-to-top).
+    std::wcout.flush();
+    std::fflush(stdout);
 
-#ifndef _WIN32
-    const size_t nlines = animal.lines.size();
-#endif
+    const size_t width = frameWidth(animal);
+    const size_t nlines = animal.lines.empty() ? 1 : animal.lines.size();
 
 #ifdef _WIN32
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
     CONSOLE_SCREEN_BUFFER_INFO csbi{};
     const bool canMove = hOut != INVALID_HANDLE_VALUE &&
                          GetConsoleScreenBufferInfo(hOut, &csbi) != 0;
-    const COORD home = canMove ? csbi.dwCursorPosition : COORD{0, 0};
+    COORD home{0, 0};
+    if (canMove) {
+        // Reserve room below the art. Without this, the last frames scroll
+        // the console and the absolute `home` row drifts upwards — exactly
+        // the "frames are printed one above another" bug.
+        const SHORT need = static_cast<SHORT>(nlines - 1);
+        if (csbi.dwCursorPosition.Y >= need) {
+            home = COORD{0, static_cast<SHORT>(csbi.dwCursorPosition.Y - need)};
+            const std::wstring gap(need, L'\n');
+            DWORD w = 0;
+            WriteConsoleW(hOut, gap.c_str(), (DWORD)gap.size(), &w, nullptr);
+        } else {
+            home = COORD{0, 0};
+        }
+    }
+    // ConPTY / redirected console: no Win32 cursor API, but ANSI still works.
+    const bool ansi = !canMove && _isatty(_fileno(stdout)) != 0;
 #else
     const bool canMove = isatty(1) != 0;
+    const bool ansi = false;
 #endif
 
     const auto finishAt = std::chrono::steady_clock::now() +
@@ -195,6 +217,10 @@ void playAnimal(const Animal& animal, int seconds) {
             SetConsoleCursorPosition(hOut, home);
             DWORD written = 0;
             WriteConsoleW(hOut, s.c_str(), (DWORD)s.size(), &written, nullptr);
+        } else if (ansi) {
+            if (frame) std::wcout << L"\033[1A\033[2K\r";
+            std::wcout << pad(renderInline(animal, frame), width);
+            std::wcout.flush();
         } else {
             std::wcout << L'\r' << pad(renderInline(animal, frame), width);
             std::wcout.flush();
@@ -225,6 +251,10 @@ void playAnimal(const Animal& animal, int seconds) {
         const std::wstring s = finalArt + ending;
         DWORD written = 0;
         WriteConsoleW(hOut, s.c_str(), (DWORD)s.size(), &written, nullptr);
+    } else if (ansi) {
+        if (frame) std::wcout << L"\033[1A\033[2K\r";
+        std::wcout << pad(renderInline(animal, 0), width) << ending;
+        std::wcout.flush();
     } else {
         std::wcout << L'\r' << pad(renderInline(animal, 0), width) << ending;
         std::wcout.flush();
