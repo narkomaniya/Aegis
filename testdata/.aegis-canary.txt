@@ -1,0 +1,5 @@
+Aegis canary file.
+This file is monitored by Aegis (file guardian). If this file is
+changed, moved or deleted, something touched this folder without
+permission and Aegis already reacted.
+Do not delete.

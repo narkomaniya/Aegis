@@ -189,11 +189,19 @@ static std::wstring tempDir() {
 #ifdef _WIN32
     wchar_t buf[MAX_PATH + 1] = {};
     DWORD n = GetTempPathW(MAX_PATH + 1, buf);
-    if (n > 0 && n <= MAX_PATH) return std::wstring(buf, n);
-    const wchar_t* t = _wgetenv(L"TEMP");
-    if (!t) t = _wgetenv(L"TMP");
-    if (!t) t = _wgetenv(L"USERPROFILE");
-    return t ? std::wstring(t) : L".";
+    std::wstring out;
+    if (n > 0 && n <= MAX_PATH) out.assign(buf, n);
+    else {
+        const wchar_t* t = _wgetenv(L"TEMP");
+        if (!t) t = _wgetenv(L"TMP");
+        if (!t) t = _wgetenv(L"USERPROFILE");
+        out = t ? std::wstring(t) : L".";
+    }
+    // GetTempPathW включает завершающий '\'; без обрезки получаются пути
+    // вида C:\Temp\\aegis-update-... с двойным разделителем.
+    while (out.size() > 3 && (out.back() == L'\\' || out.back() == L'/'))
+        out.pop_back();
+    return out;
 #else
     // Unix: пути внутри проекта хранятся как wide-строки из байтов (см. selfPath()).
     const char* t = std::getenv("TMPDIR");
