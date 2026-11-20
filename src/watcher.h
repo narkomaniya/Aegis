@@ -7,8 +7,9 @@
 #include <atomic>
 #include <functional>
 
-#ifdef __APPLE__
 #include <mutex>
+
+#ifdef __APPLE__
 #include <CoreFoundation/CoreFoundation.h>
 #include <CoreServices/CoreServices.h>
 #endif
@@ -34,7 +35,7 @@ public:
     bool add(const std::wstring& dir);
 
     void start();  // запустить фоновые потоки
-    void stop();   // остановить (потоки завершаются вместе с процессом)
+    void stop();   // остановить и дождаться завершения потоков (без detach)
 
     const std::vector<std::wstring>& dirs() const { return dirs_; }
 
@@ -51,6 +52,11 @@ private:
     std::mutex supMu_;                 // защищает runloop_/stream_ от доступа из stop()
     CFRunLoopRef runloop_ = nullptr;   // run loop потока наблюдения
     FSEventStreamRef stream_ = nullptr; // сам stream FSEvents
+#elif defined(_WIN32)
+    void* stopEvent_ = nullptr;        // manual-reset event, будит WaitForMultipleObjects
+#else
+    std::mutex wakeMu_;                // защищает wakeFd_ от гонки start()/stop()
+    int wakeFd_[2] = {-1, -1};         // self-pipe: будит блокирующий poll()
 #endif
 
     EventCallback cb_;

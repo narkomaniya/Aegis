@@ -11,6 +11,7 @@
 
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <string>
 
 #ifdef _WIN32
@@ -21,7 +22,9 @@
 #include <windows.h>
 #else
 #include <cstdlib>
-#include <fstream>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 #endif
 
 namespace fs = std::filesystem;
@@ -48,8 +51,12 @@ int runAutostart(const std::wstring& mode) {
     }
 
     if (mode == L"off") {
-        RegDeleteValueW(hKey, kRegValue);   // нет значения — тоже успех
+        LSTATUS rc = RegDeleteValueW(hKey, kRegValue);   // нет значения — тоже успех
         RegCloseKey(hKey);
+        if (rc != ERROR_SUCCESS && rc != ERROR_FILE_NOT_FOUND) {
+            warn(L"cannot remove HKCU Run value");
+            return 1;
+        }
         ok(L"autostart/background protection disabled");
         return 0;
     }
@@ -75,10 +82,26 @@ int autostartStatus() {
     wchar_t buf[2048] = {};
     DWORD type = 0, size = sizeof(buf);
     LSTATUS rc = RegQueryValueExW(hKey, kRegValue, nullptr, &type, reinterpret_cast<LPBYTE>(buf), &size);
-    RegCloseKey(hKey);
+    std::wstring cmdLine;
     if (rc == ERROR_SUCCESS && type == REG_SZ) {
+        cmdLine.assign(buf, size / sizeof(wchar_t));
+        while (!cmdLine.empty() && cmdLine.back() == L'\0') cmdLine.pop_back();
+    } else if (rc == ERROR_MORE_DATA) {
+        // значение длиннее буфера: забираем нужный размер и читаем ещё раз
+        std::wstring big(size / sizeof(wchar_t), L'\0');
+        DWORD size2 = size;
+        if (RegQueryValueExW(hKey, kRegValue, nullptr, &type,
+                             reinterpret_cast<LPBYTE>(big.data()), &size2) == ERROR_SUCCESS &&
+            type == REG_SZ) {
+            big.resize(size2 / sizeof(wchar_t));
+            while (!big.empty() && big.back() == L'\0') big.pop_back();
+            cmdLine = big;
+        }
+    }
+    RegCloseKey(hKey);
+    if (!cmdLine.empty()) {
         console(L"Autostart: ENABLED");
-        console(L"  Command: " + std::wstring(buf));
+        console(L"  Command: " + cmdLine);
     } else {
         console(L"Autostart: DISABLED");
     }
@@ -122,6 +145,45 @@ static std::wstring homeDirRaw() {
     return h ? std::wstring(h, h + std::strlen(h)) : L"";
 }
 
+// На POSIX широкие строки путей хранят сырые байты (см. updater.cpp):
+// обратное превращение — просто копия байтов, без повторного UTF-8-кодирования.
+static std::string rawNarrow(const std::wstring& w) {
+    return std::string(w.begin(), w.end());
+}
+
+static std::string xmlEsc(const std::string& s) {
+    std::string o;
+    o.reserve(s.size());
+    for (char c : s) {
+        if (c == '&') o += "&amp;";
+        else if (c == '<') o += "&lt;";
+        else if (c == '>') o += "&gt;";
+        else o += c;
+    }
+    return o;
+}
+
+// Экранирование значения Exec= по спецификации Desktop Entry.
+static std::string desktopEsc(const std::string& s) {
+    std::string o;
+    o.reserve(s.size());
+    for (char c : s) {
+        if (c == '\\' || c == '"' || c == '`' || c == '$') o += '\\';
+        o += c;
+    }
+    return o;
+}
+
+static bool writeFileChecked(const fs::path& p, const std::string& body) {
+    std::ofstream f(p, std::ios::binary | std::ios::trunc);
+    if (!f) return false;
+    f.write(body.data(), (std::streamsize)body.size());
+    f.flush();
+    if (!f) { f.close(); return false; }
+    f.close();
+    return static_cast<bool>(f);
+}
+
 #ifdef __APPLE__
 
 // macOS: LaunchAgent plist — сработает при входе пользователя.
@@ -140,15 +202,21 @@ int runAutostart(const std::wstring& mode) {
     const fs::path plist = fs::path(agentPath());
     if (mode == L"off") {
         std::error_code ec;
-        fs::remove(plist, ec);              // нет файла — тоже успех
+        std::error_code existEc;
+        bool existed = fs::exists(plist, existEc);
+        if (existed) {
+            fs::remove(plist, ec);              // нет файла — тоже успех
+            if (ec) { warn(L"cannot remove LaunchAgent plist"); return 1; }
+        }
         ok(L"autostart/background protection disabled (LaunchAgent plist removed)");
         return 0;
     }
 
     std::error_code ec;
     fs::create_directories(plist.parent_path(), ec);
+    if (ec) { warn(L"cannot create LaunchAgents directory"); return 1; }
 
-    std::string narrow = fs::path(self).string();   // широкий путь -> родной narrow (UTF-8 на POSIX)
+    std::string narrow = xmlEsc(rawNarrow(self));
     std::string body =
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
         "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\""
@@ -164,10 +232,7 @@ int runAutostart(const std::wstring& mode) {
         "  <key>KeepAlive</key>\n  <true/>\n"
         "</dict>\n</plist>\n";
 
-    std::ofstream f(plist, std::ios::binary | std::ios::trunc);
-    if (!f) { warn(L"cannot write LaunchAgent plist"); return 1; }
-    f << body;
-    f.close();
+    if (!writeFileChecked(plist, body)) { warn(L"cannot write LaunchAgent plist"); return 1; }
 
     ok(L"autostart/background protection enabled (LaunchAgent): " + plist.wstring());
     return 0;
@@ -221,16 +286,21 @@ int runAutostart(const std::wstring& mode) {
 
     const fs::path desktop = fs::path(desktopPath());
     if (mode == L"off") {
-        std::error_code ec;
-        fs::remove(desktop, ec);            // нет файла — тоже успех
+        std::error_code existEc;
+        if (fs::exists(desktop, existEc)) {
+            std::error_code ec;
+            fs::remove(desktop, ec);            // нет файла — тоже успех
+            if (ec) { warn(L"cannot remove autostart .desktop"); return 1; }
+        }
         ok(L"autostart/background protection disabled");
         return 0;
     }
 
     std::error_code ec;
     fs::create_directories(desktop.parent_path(), ec);
+    if (ec) { warn(L"cannot create autostart directory"); return 1; }
 
-    std::string narrow = fs::path(self).string();
+    std::string narrow = desktopEsc(rawNarrow(self));
     std::string body =
         "[Desktop Entry]\n"
         "Type=Application\n"
@@ -240,10 +310,7 @@ int runAutostart(const std::wstring& mode) {
         "X-GNOME-Autostart-enabled=true\n"
         "Terminal=false\n";
 
-    std::ofstream f(desktop, std::ios::binary | std::ios::trunc);
-    if (!f) { warn(L"cannot write autostart .desktop"); return 1; }
-    f << body;
-    f.close();
+    if (!writeFileChecked(desktop, body)) { warn(L"cannot write autostart .desktop"); return 1; }
 
     ok(L"autostart/background protection enabled: " + desktop.wstring());
     return 0;
@@ -268,15 +335,18 @@ int runServiceCommand(const std::wstring& action) {
     if (action == L"uninstall" || action == L"disable") return runAutostart(L"off");
     if (action == L"start") {
         console(L"Best-effort start: run `aegis watch --daemon` now (or re-login if XDG autostart is enabled).");
-        std::string self = fs::path(selfPath()).string();
-        if (!self.empty()) {
-            std::string cmd = "\"" + self + "\" watch --daemon >/dev/null 2>&1 &";
-            std::system(cmd.c_str());
-            ok(L"Background daemon launch requested (best effort).");
-            return 0;
+        std::string self = rawNarrow(selfPath());
+        if (self.empty()) { warn(L"cannot determine own path"); return 1; }
+        pid_t pid = fork();
+        if (pid < 0) { warn(L"cannot fork to start daemon"); return 1; }
+        if (pid == 0) {
+            setsid();
+            execl(self.c_str(), self.c_str(), "watch", "--daemon",
+                  static_cast<char*>(nullptr));
+            _exit(127);
         }
-        warn(L"cannot determine own path");
-        return 1;
+        ok(L"Background daemon launch requested (best effort).");
+        return 0;
     }
     if (action == L"stop") {
         console(L"Best-effort stop: stop the running daemon process (e.g. pkill -f 'aegis.*--daemon') or end it manually.");

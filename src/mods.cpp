@@ -11,6 +11,8 @@
 #include <cctype>
 #include <cstring>
 #include <fstream>
+#include <locale>
+#include <codecvt>
 #include <sstream>
 
 #ifdef _WIN32
@@ -58,7 +60,12 @@ static std::string wToUtf8(const std::wstring& w) {
     if (n > 0) WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), s.data(), n, nullptr, nullptr);
     return s;
 #else
-    return std::string(w.begin(), w.end());
+    try {
+        std::wstring_convert<std::codecvt_utf8<wchar_t>> conv;
+        return conv.to_bytes(w);
+    } catch (...) {
+        return std::string(w.begin(), w.end());
+    }
 #endif
 }
 
@@ -70,7 +77,12 @@ static std::wstring utf8ToW(const std::string& s) {
     if (n > 0) MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), w.data(), n);
     return w;
 #else
-    return std::wstring(s.begin(), s.end());
+    try {
+        std::wstring_convert<std::codecvt_utf8<wchar_t>> conv;
+        return conv.from_bytes(s);
+    } catch (...) {
+        return std::wstring(s.begin(), s.end());
+    }
 #endif
 }
 
@@ -159,7 +171,8 @@ std::vector<ModManifest> scanMods(const Settings& settings) {
     if (!fs::exists(md, ec)) return out;
     for (auto& e : fs::directory_iterator(md, ec)) {
         if (ec) break;
-        if (!e.is_regular_file(ec)) continue;
+        std::error_code efile;
+        if (!e.is_regular_file(efile) || efile) continue;
         auto ext = lowerWLocal(e.path().extension().wstring());
         if (ext == L".aegismod" || ext == L".mod" || ext == L".txt") {
             out.push_back(loadModManifest(e.path(), settings));
@@ -302,10 +315,24 @@ static std::wstring nowStamp() {
 
 bool publishMod(const ModManifest& m, bool strict, std::wstring& reportPath, std::wstring& summary) {
     auto vr = verifyMod(m, strict);
+
+    // id/version приходят из манифеста (потенциально враждебного): не даём им
+    // выйти за пределы mods-publish через ../ или абсолютный путь.
+    auto fileSafe = [](std::wstring s) {
+        for (auto& c : s) {
+            if (c == L'/' || c == L'\\' || c == L':' || c == L'*' || c == L'?' ||
+                c == L'"' || c == L'<' || c == L'>' || c == L'|' || c < 32)
+                c = L'_';
+        }
+        if (s.empty()) s = L"mod";
+        return s;
+    };
+
     std::error_code ec;
     fs::path pubDir = fs::path(aegisDirLocal()) / L"mods-publish";
     fs::create_directories(pubDir, ec);
-    fs::path report = pubDir / (modKey(m) + L"-publish-" + nowStamp() + L".txt");
+    if (ec) { summary = L"Could not create publish directory."; return false; }
+    fs::path report = pubDir / (fileSafe(modKey(m)) + L"-publish-" + nowStamp() + L".txt");
     reportPath = report.wstring();
 
     std::ofstream out(report, std::ios::binary | std::ios::trunc);
@@ -333,14 +360,22 @@ bool publishMod(const ModManifest& m, bool strict, std::wstring& reportPath, std
     }
     out << "Automated checks performed: manifest fields, id/version format, file size, supported applies action, basic safety pattern scan.\n";
     out << "If PASS, this mod package/manifest is ready for submission/publishing review pipeline.\n";
+    out.flush();
+    if (!out) { summary = L"Could not write publish report."; return false; }
 
-    // copy manifest next to report as publish artifact
-    fs::path artifact = pubDir / (modKey(m) + L"-" + (m.version.empty()?L"0.0.0":m.version) + L".aegismod");
-    ec.clear();
-    fs::copy_file(fs::path(m.path), artifact, fs::copy_options::overwrite_existing, ec);
+    // Артефакт публикуем только после успешной проверки.
+    std::wstring artifactNote;
+    if (vr.ok) {
+        fs::path artifact = pubDir / (fileSafe(modKey(m)) + L"-" +
+                                      fileSafe(m.version.empty() ? L"0.0.0" : m.version) +
+                                      L".aegismod");
+        ec.clear();
+        fs::copy_file(fs::path(m.path), artifact, fs::copy_options::overwrite_existing, ec);
+        if (!ec) artifactNote = L" | Artifact: " + artifact.wstring();
+    }
 
-    summary = (vr.ok ? L"Publish verification PASSED" : L"Publish verification FAILED") + std::wstring(L". Report: ") + reportPath;
-    if (!ec) summary += L" | Artifact: " + artifact.wstring();
+    summary = (vr.ok ? L"Publish verification PASSED" : L"Publish verification FAILED") +
+              std::wstring(L". Report: ") + reportPath + artifactNote;
     return vr.ok;
 }
 
@@ -361,10 +396,16 @@ std::wstring createModScaffold(const std::wstring& nameIn, std::wstring& outPath
     }
     if (safe.empty()) { err = L"Invalid mod name/id"; return L""; }
     fs::path out = fs::path(modsDirPath()) / (safe + L".aegismod");
-    if (fs::exists(out, ec)) { err = L"Mod already exists: " + out.wstring(); return L""; }
+    ec.clear();
+    if (fs::exists(out, ec) && !ec) { err = L"Mod already exists: " + out.wstring(); return L""; }
+
+    // Имя пишется в манифест как одна строка: перевод строки сломал бы формат.
+    std::wstring display = name.empty() ? safe : name;
+    for (auto& c : display) if (c == L'\r' || c == L'\n') c = L' ';
+
     std::ofstream f(out, std::ios::binary | std::ios::trunc);
     if (!f) { err = L"Could not create mod file"; return L""; }
-    f << "name=" << wToUtf8(name.empty()?safe:name) << "\n";
+    f << "name=" << wToUtf8(display) << "\n";
     f << "id=" << wToUtf8(safe) << "\n";
     f << "author=\n";
     f << "version=0.1.0\n";
@@ -378,6 +419,14 @@ std::wstring createModScaffold(const std::wstring& nameIn, std::wstring& outPath
     f << "# Required for publish: name,id,version (+ recommended author,type,description,status)\n";
     f << "# Supported runtime applies (current build): ui_theme:white | ui_theme:black | ui_theme:default\n";
     f << "# Use: aegis mod verify " << wToUtf8(safe) << "   and   aegis mod publish " << wToUtf8(safe) << "\n";
+    f.flush();
+    if (!f) {
+        f.close();
+        std::error_code e2;
+        fs::remove(out, e2);
+        err = L"Could not write mod file";
+        return L"";
+    }
     outPath = out.wstring();
     return safe;
 }

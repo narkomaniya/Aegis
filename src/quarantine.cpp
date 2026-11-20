@@ -1,5 +1,6 @@
 // quarantine.cpp
 #include "quarantine.h"
+#include "logger.h"
 
 #include <chrono>
 #include <ctime>
@@ -73,47 +74,31 @@ bool Quarantine::moveIn(const std::wstring& full, const std::wstring& reason, bo
         }
     }
 
-    // Карантинная запись: папка вида <root>\20261107_142233_<имя>
-    // Имена могут совпасть (два файла в одну секунду) — добавляем _1, _2, ...
-    fs::path folder = fs::path(root_) /
-                      (stamp() + L"_" + src.filename().wstring());
-    for (int i = 1; fs::exists(folder, ec) && !ec && i < 1000; ++i) {
-        ec.clear();
-        folder = fs::path(root_) /
-                 (stamp() + L"_" + std::to_wstring(i) + L"_" + src.filename().wstring());
-    }
+    // Карантинная запись: папка вида <root>\20261107_142233_<имя>.
+    // Папку "занимаем" атомарно (create_directory), поэтому два потока/процесса
+    // не могут писать в одну и ту же запись и затирать друг друга.
     ec.clear();
-    fs::create_directories(folder, ec);
+    fs::create_directories(fs::path(root_), ec);
     if (ec) return false;
 
-    fs::path dst = folder / src.filename();
-    bool placed = false;
-
-    if (copyOnly) {
+    fs::path folder;
+    for (int i = 0; i < 1000; ++i) {
         ec.clear();
-        fs::copy_file(src, dst, fs::copy_options::overwrite_existing, ec);
-        placed = !ec;
-    } else {
-        ec.clear();
-        fs::rename(src, dst, ec);  // быстрый путь: та же файловая система
-        if (ec) {
-            // резерв: скопировать и убрать исходник
-            ec.clear();
-            fs::copy_file(src, dst, fs::copy_options::overwrite_existing, ec);
-            if (!ec) {
-                std::error_code ec2;
-                fs::remove(src, ec2);
-                placed = true;
-            }
-        } else {
-            placed = true;
-        }
+        fs::path cand = fs::path(root_) /
+                        (stamp() + L"_" + (i ? std::to_wstring(i) + L"_" : L"") +
+                         src.filename().wstring());
+        if (fs::create_directory(cand, ec)) { folder = cand; break; }
+        if (ec) return false;       // настоящая ошибка (права, длина пути) — не крутимся дальше
     }
-    if (!placed) return false;
+    if (folder.empty()) return false;
 
-    // meta.txt — вся история: что забрали и почему
-    std::ofstream meta(folder / L"meta.txt", std::ios::binary);
-    if (meta) {
+    // meta.txt пишем ДО переноса файла: если процесс упадёт между шагами,
+    // останется запись без файла (её видно и можно почистить), а не файл без
+    // записи, который невозможно восстановить на место.
+    fs::path metaTmp = folder / L"meta.txt.tmp";
+    {
+        std::ofstream meta(metaTmp, std::ios::binary | std::ios::trunc);
+        if (!meta) { std::error_code c; fs::remove_all(folder, c); return false; }
         auto toUtf8 = [](const std::wstring& w) {
             if (w.empty()) return std::string{};
 #ifdef _WIN32
@@ -132,6 +117,57 @@ bool Quarantine::moveIn(const std::wstring& full, const std::wstring& reason, bo
         meta << "from    : " << toUtf8(full) << "\n";
         meta << "taken at: " << toUtf8(stamp()) << "\n";
         meta << "mode    : " << (copyOnly ? "copy (emergency)" : "move") << "\n";
+        meta.close();
+        if (!meta) { std::error_code c; fs::remove_all(folder, c); return false; }
+    }
+    ec.clear();
+    fs::rename(metaTmp, folder / L"meta.txt", ec);
+    if (ec) { std::error_code c; fs::remove_all(folder, c); return false; }
+
+    // Файл кладём в подпапку data/, иначе файл с именем "meta.txt" затирал бы
+    // собственную мета-запись (и терялся безвозвратно).
+    fs::path dataDir = folder / L"data";
+    ec.clear();
+    fs::create_directories(dataDir, ec);
+    if (ec) { std::error_code c; fs::remove_all(folder, c); return false; }
+
+    fs::path dst = dataDir / src.filename();
+    bool placed = false;
+
+    if (copyOnly) {
+        ec.clear();
+        fs::copy_file(src, dst, fs::copy_options::none, ec);
+        placed = !ec;
+    } else {
+        ec.clear();
+        fs::rename(src, dst, ec);  // быстрый путь: та же файловая система
+        if (ec) {
+            // резерв: скопировать и убрать исходник
+            ec.clear();
+            fs::copy_file(src, dst, fs::copy_options::none, ec);
+            if (!ec) {
+                std::error_code ec2;
+                fs::remove(src, ec2);
+                if (ec2) {
+                    // файл остался на месте — не врём, что он в карантине:
+                    // чистим частичную запись и сообщаем о неудаче.
+                    ae::warn(L"quarantine: could not remove source, file is still in place: " +
+                             src.wstring());
+                    ec.clear();
+                    fs::remove_all(folder, ec);
+                    return false;
+                }
+                placed = true;
+            }
+        } else {
+            placed = true;
+        }
+    }
+
+    if (!placed) {
+        std::error_code c;
+        fs::remove_all(folder, c);
+        return false;
     }
     return true;
 }
@@ -160,13 +196,23 @@ std::vector<Quarantine::Record> Quarantine::records() const {
         Record r;
         r.folder = e.path().wstring();
 
-        // сам забранный файл: любой элемент записи, кроме meta.txt
+        // сам забранный файл: новый формат — <запись>/data/<файл>,
+        // старый (до 5.1) — <запись>/<файл>. meta.txt пропускаем всегда.
         std::error_code ecIn;
-        for (const auto& f : fs::directory_iterator(e.path(), ecIn)) {
-            if (ecIn) break;
-            if (f.path().filename() == L"meta.txt") continue;
-            r.file = f.path().filename().wstring();
-            break;
+        auto pickPayload = [&](const fs::path& dir) -> bool {
+            std::error_code ecIt;
+            for (const auto& f : fs::directory_iterator(dir, ecIt)) {
+                if (ecIt) return false;
+                if (!f.is_regular_file(ecIt)) continue;
+                if (f.path().filename() == L"meta.txt") continue;
+                r.file = f.path().filename().wstring();
+                return true;
+            }
+            return false;
+        };
+        if (!pickPayload(e.path() / L"data")) {
+            (void)ecIn;
+            pickPayload(e.path());
         }
 
         std::ifstream meta(e.path() / L"meta.txt", std::ios::binary);
@@ -177,10 +223,12 @@ std::vector<Quarantine::Record> Quarantine::records() const {
                 if (colon == std::string::npos) continue;
                 std::string key = trimBytes(line.substr(0, colon));
                 std::string val = trimBytes(line.substr(colon + 1));
-                if      (key == "reason")  r.reason = utf8ToWide(val);
-                else if (key == "from")    r.from   = utf8ToWide(val);
-                else if (key == "taken at") r.time  = utf8ToWide(val);
-                else if (key == "mode")    r.mode   = utf8ToWide(val);
+                // первое вхождение ключа выигрывает: повторный "from:" не должен
+                // переопределять настоящее место, откуда файл забрали
+                if      (key == "reason")   { if (r.reason.empty()) r.reason = utf8ToWide(val); }
+                else if (key == "from")     { if (r.from.empty())   r.from   = utf8ToWide(val); }
+                else if (key == "taken at") { if (r.time.empty())   r.time   = utf8ToWide(val); }
+                else if (key == "mode")     { if (r.mode.empty())   r.mode   = utf8ToWide(val); }
             }
         }
 
@@ -193,11 +241,20 @@ std::vector<Quarantine::Record> Quarantine::records() const {
 bool Quarantine::restore(const Record& rec) {
     std::error_code ec;
     fs::path folder(rec.folder);
-    fs::path src = folder / fs::path(rec.file);
-    if (!fs::exists(src, ec) || ec) return false;
 
+    // новый формат: payload в data/, старый — прямо в папке записи
+    fs::path src = folder / L"data" / fs::path(rec.file);
+    if (!fs::exists(src, ec) || ec) {
+        ec.clear();
+        src = folder / fs::path(rec.file);
+        if (!fs::exists(src, ec) || ec) return false;
+    }
+
+    // "from" читается из meta.txt, которую может подменить любой, у кого есть
+    // доступ к ~/.aegis: разрешаем только абсолютные пути без управляющих байтов.
+    if (rec.from.empty() || rec.from.find_first_of(L"\r\n\t") != std::wstring::npos) return false;
     fs::path dest = fs::path(rec.from);
-    if (dest.empty()) return false;
+    if (!dest.is_absolute()) return false;
 
     // путь мог "сдохнуть" с момента карантина (файлы уехали в OneDrive и т.п.) —
     // пересоздаём родителя, иначе rename падает с Access denied
@@ -208,25 +265,41 @@ bool Quarantine::restore(const Record& rec) {
         if (ecP) return false;
     }
 
-    if (fs::exists(dest, ec)) {
-        // оригинал уже занят — не затираем живой файл, кладём рядом с меткой
+    // Оригинал уже занят — не затираем живой файл, подбираем реально свободное имя.
+    {
         std::error_code ecE;
-        fs::path stem = dest.stem();
-        fs::path ext  = dest.extension();
-        dest = dest.parent_path() /
-               (stem.wstring() + L" (restored)" + ext.wstring());
-        (void)ecE;
+        bool exists = fs::exists(dest, ecE);
+        if (ecE) return false;   // не смогли проверить — лучше честно упасть
+        if (exists) {
+            const std::wstring parent = dest.parent_path().wstring();
+            const std::wstring stem = dest.stem().wstring();
+            const std::wstring ext  = dest.extension().wstring();
+            bool found = false;
+            for (int i = 1; i < 1000 && !found; ++i) {
+                std::wstring name = stem + L" (restored" +
+                                    (i > 1 ? L" " + std::to_wstring(i) : L"") + L")" + ext;
+                fs::path cand = parent.empty() ? fs::path(name) : fs::path(parent) / name;
+                std::error_code ecC;
+                if (!fs::exists(cand, ecC)) {
+                    if (ecC) return false;
+                    dest = cand;
+                    found = true;
+                }
+            }
+            if (!found) return false;
+        }
     }
 
     ec.clear();
     fs::rename(src, dest, ec);   // быстрый путь: та же файловая система
     if (ec) {
-        // резерв: скопировать и убрать исходник
+        // резерв: скопировать и убрать исходник (без overwrite — не затираем чужое)
         ec.clear();
-        fs::copy_file(src, dest, fs::copy_options::overwrite_existing, ec);
+        fs::copy_file(src, dest, fs::copy_options::none, ec);
         if (ec) return false;
         std::error_code ec2;
         fs::remove(src, ec2);
+        if (ec2) return false;   // копия есть, но запись оставляем — не теряем данные
     }
 
     // запись отслужила

@@ -47,6 +47,7 @@ namespace ae {
 static std::wstring fileOwnerWin(const std::wstring& full) {
     HMODULE rm = LoadLibraryW(L"rstrtmgr.dll");
     if (!rm) return L"";
+    struct LibGuard { HMODULE h; ~LibGuard() { if (h) FreeLibrary(h); } } libGuard{rm};
 
     typedef DWORD (WINAPI *RmStartSession_t)(DWORD*, DWORD, wchar_t*);
     typedef DWORD (WINAPI *RmRegisterResources_t)(DWORD, UINT, const wchar_t**,

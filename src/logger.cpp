@@ -3,9 +3,11 @@
 
 #include <chrono>
 #include <ctime>
+#include <codecvt>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <locale>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -113,7 +115,12 @@ static std::string toUtf8(const std::wstring& w) {
         WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), s.data(), n, nullptr, nullptr);
     return s;
 #else
-    return std::string(w.begin(), w.end());
+    try {
+        std::wstring_convert<std::codecvt_utf8<wchar_t>> conv;
+        return conv.to_bytes(w);
+    } catch (...) {
+        return std::string(w.begin(), w.end());
+    }
 #endif
 }
 

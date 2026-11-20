@@ -18,6 +18,10 @@
 #include <fstream>
 #include <chrono>
 #include <ctime>
+#include <limits>
+#include <atomic>
+#include <thread>
+#include <csignal>
 #include <utility>
 
 #include "logger.h"
@@ -50,6 +54,7 @@
 #include <codecvt>
 #include <fstream>
 #include <unistd.h>
+#include <sys/wait.h>
 #endif
 
 namespace fs = std::filesystem;
@@ -67,7 +72,7 @@ static std::wstring toW(const std::string& s) {
 static std::wstring toW(const std::string& s) {
     if (s.empty()) return L"";
     try {
-        std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> conv;
+        std::wstring_convert<std::codecvt_utf8<wchar_t>> conv;
         return conv.from_bytes(s);
     } catch (...) {
         return std::wstring(s.begin(), s.end());
@@ -75,9 +80,31 @@ static std::wstring toW(const std::string& s) {
 }
 #endif
 
-static void setupConsole() {
-    std::setlocale(LC_ALL, "");
+static std::wstring utf8ToWStr(const std::string& s) {
+    if (s.empty()) return L"";
 #ifdef _WIN32
+    int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), nullptr, 0);
+    std::wstring w((size_t)(n > 0 ? n : 0), L'\0');
+    if (n > 0) MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), w.data(), n);
+    return w;
+#else
+    try {
+        std::wstring_convert<std::codecvt_utf8<wchar_t>> conv;
+        return conv.from_bytes(s);
+    } catch (...) {
+        return std::wstring(s.begin(), s.end());
+    }
+#endif
+}
+
+static void setupConsole() {
+#ifdef _WIN32
+    std::setlocale(LC_ALL, "");
+    // C++-потоки живут в своей локали: без global() первый же не-ASCII символ
+    // ставит sticky failbit и весь дальнейший вывод/ввод молча пропадает.
+    try { std::locale::global(std::locale("")); } catch (...) {}
+    if (_isatty(_fileno(stdin)))
+        _setmode(_fileno(stdin), _O_U16TEXT);
     if (_isatty(_fileno(stdout))) {
         _setmode(_fileno(stdout), _O_U16TEXT);
         _setmode(_fileno(stderr), _O_U16TEXT);
@@ -86,6 +113,9 @@ static void setupConsole() {
         if (GetConsoleMode(h, &mode))
             SetConsoleMode(h, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
     }
+#else
+    std::setlocale(LC_ALL, "");
+    try { std::locale::global(std::locale("")); } catch (...) {}
 #endif
 }
 
@@ -145,6 +175,25 @@ static std::wstring lowerW(std::wstring s) {
     return s;
 }
 
+// Строгий разбор номера из меню: только цифры и без переполнения size_t.
+// Иначе длинная строка заворачивается и попадает в чужой индекс.
+static bool parseIndex(const std::wstring& s, size_t& out) {
+    if (s.empty()) return false;
+    size_t v = 0;
+    for (wchar_t c : s) {
+        if (c < L'0' || c > L'9') return false;
+        size_t d = (size_t)(c - L'0');
+        if (v > (std::numeric_limits<size_t>::max() - d) / 10) return false;
+        v = v * 10 + d;
+    }
+    out = v;
+    return true;
+}
+
+// Daemon: завершаемся по SIGINT/SIGTERM, а не по EOF на stdin.
+static std::atomic<bool> g_stopRequested{false};
+static void onStopSignal(int) { g_stopRequested.store(true); }
+
 static std::wstring homeDir() {
 #ifdef _WIN32
     const char* up = std::getenv("USERPROFILE");
@@ -196,7 +245,13 @@ static std::string to8(const std::wstring& w){
     int n = WideCharToMultiByte(CP_UTF8,0,w.c_str(),(int)w.size(),nullptr,0,nullptr,nullptr);
     s.resize(n); if(n>0) WideCharToMultiByte(CP_UTF8,0,w.c_str(),(int)w.size(),s.data(),n,nullptr,nullptr);
 #else
-    s.assign(w.begin(), w.end());
+    if (w.empty()) return s;
+    try {
+        std::wstring_convert<std::codecvt_utf8<wchar_t>> conv;
+        s = conv.to_bytes(w);
+    } catch (...) {
+        s.assign(w.begin(), w.end());
+    }
 #endif
     return s;
 }
@@ -292,9 +347,7 @@ static void modsManagerMenu(Settings& settings) {
         // actions that need selection
         console(L"  Enter mod number (or 0 to cancel):"); prompt(L"  > ");
         std::wstring n; if (!std::getline(std::wcin, n)) return; n = trimW(n);
-        size_t num = 0; bool okn = !n.empty();
-        for (wchar_t c : n) if (c < L'0' || c > L'9') { okn = false; break; }
-        if (okn) for (wchar_t c : n) num = num * 10 + (size_t)(c - L'0');
+        size_t num = 0; bool okn = parseIndex(n, num);
         if (!okn || num == 0) continue;
         mods = scanMods(settings);
         if (num > mods.size()) { warn(L"No such mod."); waitEnter(); continue; }
@@ -536,11 +589,15 @@ static void loadUserRules(Settings& s) {
     std::string line;
     while (std::getline(f, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
+        // UTF-8 BOM в начале файла (Блокнот) не должен съедать первое правило
+        if (line.size() >= 3 && (unsigned char)line[0] == 0xEF &&
+            (unsigned char)line[1] == 0xBB && (unsigned char)line[2] == 0xBF)
+            line.erase(0, 3);
         if (line.rfind("exclude_path=", 0) == 0) {
-            std::wstring w = toW(line.substr(13));
+            std::wstring w = utf8ToWStr(line.substr(13));
             if (!w.empty()) s.excludePaths.push_back(w);
         } else if (line.rfind("exclude_ext=", 0) == 0) {
-            std::wstring w = toW(line.substr(12));
+            std::wstring w = utf8ToWStr(line.substr(12));
             if (!w.empty()) {
                 if (w[0] != L'.') w = L"." + w;
                 s.excludeExts.push_back(w);
@@ -593,12 +650,23 @@ static bool openPath(const std::wstring& path) {
 #ifdef _WIN32
     HINSTANCE r = ShellExecuteW(nullptr, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
     return (INT_PTR)r > 32;
-#elif defined(__APPLE__)
-    std::string cmd = "open \"" + std::string(path.begin(), path.end()) + "\"";
-    return std::system(cmd.c_str()) == 0;
 #else
-    std::string cmd = "xdg-open \"" + std::string(path.begin(), path.end()) + "\"";
-    return std::system(cmd.c_str()) == 0;
+    // Без shell: путь может содержать кавычки/$(...)/` и не должен исполняться.
+#if defined(__APPLE__)
+    const char* opener = "open";
+#else
+    const char* opener = "xdg-open";
+#endif
+    std::string p = to8(path);
+    pid_t pid = fork();
+    if (pid < 0) return false;
+    if (pid == 0) {
+        execlp(opener, opener, p.c_str(), static_cast<char*>(nullptr));
+        _exit(127);
+    }
+    int st = 0;
+    if (waitpid(pid, &st, 0) < 0) return false;
+    return WIFEXITED(st) && WEXITSTATUS(st) == 0;
 #endif
 }
 
@@ -620,6 +688,7 @@ static bool isRecentRecord(const Quarantine::Record& r, int minutes) {
     tm.tm_hour = (t[9]-L'0')*10 + (t[10]-L'0');
     tm.tm_min  = (t[11]-L'0')*10 + (t[12]-L'0');
     tm.tm_sec  = (t[13]-L'0')*10 + (t[14]-L'0');
+    tm.tm_isdst = -1;   // пусть mktime сам разберётся с переходом на летнее время
     std::time_t then = std::mktime(&tm);
     if (then == (std::time_t)-1) return false;
     std::time_t now = std::time(nullptr);
@@ -643,12 +712,15 @@ static int doRestoreByNumber(Quarantine& q, Engine* engine, const std::wstring& 
     std::wstring s = trimW(numStr);
     size_t num = 0;
     if (s.empty()) { console(L"no number given"); return 1; }
-    for (wchar_t c : s) { if (c < L'0' || c > L'9') { console(L"number must be digits: " + s); return 1; } num = num * 10 + (size_t)(c - L'0'); }
+    if (!parseIndex(s, num)) { console(L"number must be digits: " + s); return 1; }
     auto recs = q.records();
     if (num == 0 || num > recs.size()) { console(L"no such record: " + std::to_wstring(num)); return 1; }
     Quarantine::Record rec = recs[num - 1];
-    if (engine) engine->ignorePath(rec.from);
-    if (q.restore(rec)) { ok(L"restored: " + rec.from); return 0; }
+    if (q.restore(rec)) {
+        if (engine) engine->ignorePath(rec.from);   // только после успеха
+        ok(L"restored: " + rec.from);
+        return 0;
+    }
     warn(L"could not restore: " + rec.file);
     return 1;
 }
@@ -679,7 +751,12 @@ static void quarantineMenu(Quarantine& q, Engine* engine) {
         if (line == L"a" || line == L"A") {
             auto all = q.records();
             int restored = 0;
-            for (auto& r : all) { if (engine) engine->ignorePath(r.from); if (q.restore(r)) restored++; }
+            for (auto& r : all) {
+                if (q.restore(r)) {
+                    if (engine) engine->ignorePath(r.from);
+                    restored++;
+                }
+            }
             ok(L"Restored " + std::to_wstring(restored) + L" file(s).");
             waitEnter(); continue;
         }
@@ -688,23 +765,31 @@ static void quarantineMenu(Quarantine& q, Engine* engine) {
             int restored = 0;
             for (auto& r : all) {
                 if (!isRecentRecord(r, 30)) continue;
-                if (engine) engine->ignorePath(r.from);
-                if (q.restore(r)) restored++;
+                if (q.restore(r)) {
+                    if (engine) engine->ignorePath(r.from);
+                    restored++;
+                }
             }
             ok(L"Restored " + std::to_wstring(restored) + L" recent file(s) (last 30 min).");
             waitEnter(); continue;
         }
         if (line == L"c" || line == L"C") {
-            std::error_code ec; fs::remove_all(fs::path(quarantineRoot()), ec);
-            fs::create_directories(fs::path(quarantineRoot()), ec);
-            ok(L"Quarantine cleared.");
+            // Удаляем только уже существующие записи, а не корень целиком:
+            // watcher может прямо сейчас класть туда новый файл (единственную копию).
+            auto all = q.records();
+            int removed = 0;
+            for (const auto& r : all) {
+                std::error_code ec;
+                fs::remove_all(fs::path(r.folder), ec);
+                if (!ec) ++removed;
+            }
+            ok(L"Quarantine cleared (" + std::to_wstring(removed) + L" record(s)).");
             waitEnter(); continue;
         }
         if (!line.empty() && (line[0] == L'd' || line[0] == L'D')) {
             std::wstring n = trimW(line.substr(1));
-            size_t num = 0; bool okn = !n.empty();
-            for (wchar_t c : n) if (c < L'0' || c > L'9') { okn = false; break; }
-            if (okn) for (wchar_t c : n) num = num * 10 + (size_t)(c - L'0');
+            size_t num = 0;
+            bool okn = parseIndex(n, num);
             auto all = q.records();
             if (okn && num >= 1 && num <= all.size()) {
                 std::error_code ec; fs::remove_all(fs::path(all[num-1].folder), ec);
@@ -810,7 +895,10 @@ static int exportReportTo(const std::wstring& pathW, bool json) {
         }
         f << "  ]\n}\n";
     }
-    return 0;
+    f.flush();
+    if (!f) { f.close(); return 1; }
+    f.close();
+    return f ? 0 : 1;
 }
 
 static void exportReport() {
@@ -956,13 +1044,13 @@ static void exclusionsMenu(Settings& settings) {
             if(!e.empty()){ if(e[0]!=L'.') e=L"."+e; settings.excludeExts.push_back(e); saveSettings(settings); ok(L"Added."); waitEnter(); }
         } else if (line == L"3") {
             console(L"  Path number to remove:"); prompt(L"  > ");
-            std::wstring n; if(!std::getline(std::wcin,n)) return; size_t num=0; for(wchar_t c:trimW(n)) if(c>=L'0'&&c<=L'9') num=num*10+(c-L'0'); else {num=0;break;}
-            if(num>=1 && num<=settings.excludePaths.size()){ settings.excludePaths.erase(settings.excludePaths.begin()+num-1); saveSettings(settings); ok(L"Removed."); }
+            std::wstring n; if(!std::getline(std::wcin,n)) return; size_t num=0;
+            if (parseIndex(trimW(n), num) && num>=1 && num<=settings.excludePaths.size()){ settings.excludePaths.erase(settings.excludePaths.begin()+num-1); saveSettings(settings); ok(L"Removed."); }
             waitEnter();
         } else if (line == L"4") {
             console(L"  Extension number to remove:"); prompt(L"  > ");
-            std::wstring n; if(!std::getline(std::wcin,n)) return; size_t num=0; for(wchar_t c:trimW(n)) if(c>=L'0'&&c<=L'9') num=num*10+(c-L'0'); else {num=0;break;}
-            if(num>=1 && num<=settings.excludeExts.size()){ settings.excludeExts.erase(settings.excludeExts.begin()+num-1); saveSettings(settings); ok(L"Removed."); }
+            std::wstring n; if(!std::getline(std::wcin,n)) return; size_t num=0;
+            if (parseIndex(trimW(n), num) && num>=1 && num<=settings.excludeExts.size()){ settings.excludeExts.erase(settings.excludeExts.begin()+num-1); saveSettings(settings); ok(L"Removed."); }
             waitEnter();
         }
     }
@@ -1000,14 +1088,14 @@ static void foldersMenu(Settings& settings) {
         } else if (line == L"r" || line == L"R") {
             console(L"  Folder number to remove:"); prompt(L"  > ");
             std::wstring n; if (!std::getline(std::wcin, n)) return; n=trimW(n);
-            size_t num=0; for(wchar_t c:n){ if(c<L'0'||c>L'9'){num=0;break;} num=num*10+(c-L'0'); }
+            size_t num=0; parseIndex(n, num);
             if (settings.watchFolders.empty()) settings.watchFolders = defaultWatchFolders();
             if (num>=1 && num<=settings.watchFolders.size()) { settings.watchFolders.erase(settings.watchFolders.begin()+num-1); saveSettings(settings); ok(L"Removed."); }
             waitEnter();
         } else if (line == L"s" || line == L"S") {
             console(L"  Folder number:"); prompt(L"  > ");
             std::wstring n; if (!std::getline(std::wcin, n)) return; n=trimW(n);
-            size_t num=0; for(wchar_t c:n){ if(c<L'0'||c>L'9'){num=0;break;} num=num*10+(c-L'0'); }
+            size_t num=0; parseIndex(n, num);
             if (settings.watchFolders.empty()) settings.watchFolders = defaultWatchFolders();
             if (num>=1 && num<=settings.watchFolders.size()) {
                 console(L"  Sensitivity for this folder: 0=global, 1=low, 2=medium, 3=high");
@@ -1200,12 +1288,13 @@ static int runWatch(const Settings& inSettings, bool fromMenu, std::vector<std::
     watcher.start();
 
     if (daemonMode) {
-        console(L"Running in daemon/non-interactive mode. Press Ctrl+C to stop.");
-        // block until stdin closes or interrupted; simple loop
-        std::wstring dummy;
-        while (std::getline(std::wcin, dummy)) {
-            // ignore input in daemon mode
-        }
+        console(L"Running in daemon/non-interactive mode. Stop with Ctrl+C / SIGTERM.");
+        std::signal(SIGINT, onStopSignal);
+        std::signal(SIGTERM, onStopSignal);
+        // stdin в сервисе обычно /dev/null: ждать его закрытия — значит выйти
+        // сразу. Ждём сигнал остановки.
+        while (!g_stopRequested.load())
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
         watcher.stop();
         ok(L"Aegis stopped. Talk soon!");
         return 0;
@@ -1241,7 +1330,8 @@ static int runWatch(const Settings& inSettings, bool fromMenu, std::vector<std::
 
         bool stop = false;
         if (fromMenu) {
-            if (low == L"0" || low == L"q" || low == L"quit" || low == L"exit" || low.empty()) stop = true;
+            if (low == L"0" || low == L"q" || low == L"quit" || low == L"exit") stop = true;
+            else if (low.empty()) continue;   // пустой Enter — не выключаем защиту
             else if (low == L"1" || low == L"status") {
                 showHeader(); console(L"  [ STATUS ]"); console(L"");
                 console(L"  events:          " + std::to_wstring(engine.eventCount()));
