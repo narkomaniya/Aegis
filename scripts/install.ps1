@@ -55,8 +55,28 @@ try {
     New-Item -ItemType Directory -Path $dest -Force | Out-Null
     $target = Join-Path $dest 'aegis.exe'
     Copy-Item -Force (Join-Path $tmp $asset) $target
+
+    # Файл, скачанный из интернета, помечается Mark-of-the-Web: без снятия
+    # метки Windows/SmartScreen может отказаться его запускать.
+    Unblock-File -Path $target -ErrorAction SilentlyContinue
+
+    # Добавляем папку в PATH пользователя, чтобы команда `aegis` работала
+    # в любом новом терминале (в текущем сеансе — сразу тоже).
+    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    if (-not $userPath) { $userPath = '' }
+    $parts = @($userPath -split ';' | Where-Object { $_ -ne '' })
+    if (-not ($parts | Where-Object { $_.TrimEnd('\') -ieq $dest.TrimEnd('\') })) {
+        $parts += $dest
+        [Environment]::SetEnvironmentVariable('Path', ($parts -join ';'), 'User')
+        Write-Host "Aegis: added $dest to your user PATH."
+    }
+    if (-not ($env:PATH -split ';' | Where-Object { $_.TrimEnd('\') -ieq $dest.TrimEnd('\') })) {
+        $env:PATH = "$env:PATH;$dest"
+    }
+
     Write-Host "Aegis installed: $target"
-    Write-Host "Run: `"$target`" help"
+    Write-Host 'Run: aegis help'
+    Write-Host "(in this terminal: `"$target`" help)"
 } finally {
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
 }

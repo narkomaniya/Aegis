@@ -76,8 +76,19 @@ fi
 chmod +x "$tmp/$asset"
 mkdir -p "$DEST"
 install -m 755 "$tmp/$asset" "$DEST/aegis"
+
+# macOS: снимаем карантинную метку, если она попала на файл.
+if [ "$(uname -s)" = "Darwin" ]; then
+    xattr -d com.apple.quarantine "$DEST/aegis" 2>/dev/null || true
+fi
+
+# Если /usr/local/bin доступен — делаем aegis доступным просто по имени.
+if [ -w /usr/local/bin ] && [ ! -e /usr/local/bin/aegis ]; then
+    ln -s "$DEST/aegis" /usr/local/bin/aegis 2>/dev/null || true
+fi
+
 echo "Aegis installed: $DEST/aegis"
-echo "Run: $DEST/aegis help"
+echo "Run: aegis help (or: $DEST/aegis help)"
 case ":$PATH:" in
     *":$DEST:"*) ;;
     *) echo "Tip: add $DEST to PATH: export PATH=\"\$PATH:$DEST\"" ;;

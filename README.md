@@ -94,7 +94,17 @@ curl -fsSL https://raw.githubusercontent.com/narkomaniya/Aegis/main/scripts/inst
 irm https://raw.githubusercontent.com/narkomaniya/Aegis/main/scripts/install.ps1 | iex
 ```
 
-Override the destination with `AEGIS_INSTALL_DIR`, then just run `aegis help`.
+The installer adds its folder to your PATH (Windows: current user PATH;
+Linux/macOS: a symlink in `/usr/local/bin` when writable), so just run:
+
+```bash
+aegis help
+```
+
+Override the destination with `AEGIS_INSTALL_DIR`. If `aegis` is still not
+found in the current terminal, either open a new terminal or run the binary by
+its full path: `~/.local/bin/aegis help` (Linux/macOS),
+`%LOCALAPPDATA%\Aegis\aegis.exe help` (Windows).
 
 Prefer doing it yourself? Download a binary directly from
 [Releases](https://github.com/narkomaniya/Aegis/releases):
