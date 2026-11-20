@@ -1,5 +1,31 @@
 # Changelog
 
+## v6.0 — Global update: Maximum Security, Configs, Doctor and the Mod Bot
+
+### Added
+- **System tray + MAXIMUM SECURITY:** `aegis watch --tray` (Watch menu → 4) shows a real Windows tray icon with status/quarantine/stop menu; POSIX uses `notify-send`/`osascript` plus `~/.aegis/tray.status`. While the tray is active, detection limits are divided by 3, entropy thresholds become 6.8/7.1 and emergency mode lasts 60 seconds. All WARN/ALERT messages are mirrored to notifications.
+- **Secret zoo:** the hidden cat command grew into six animals (cat, dog, fox, owl, penguin, dragon) with 8-frame in-place animations and `zoo` / `зоопарк` menu. Easter egg remains hidden with a subtle hint in `help`.
+- **Configs:** `aegis configs` (menu 11) — save presets, apply them with a diff and backup, import configs from a URL/local path with strict whitelist validation and atomic replacement, publish a preset via `gh gist`.
+- **Doctor:** `aegis doctor` (menu 12) — binary SHA256, config/mod/autostart/canary checks and a 0–100 Security Score with a verdict.
+- **Mod bot:** `aegis mod bot <mod>|--all [--upload]` — deep `on_content` code scan (dynamic execution, payload/base64 blobs, external URLs in code, suspicious fields) plus strict manifest verification. Approved mods get an artifact and a `.bot.txt` receipt with SHA256 in `~/.aegis/mods-approved/`; `make_release.ps1` and both installers include bot-approved assets.
+
+### Changed
+- Reworked main menu into grouped sections with a status strip; improved watch status output.
+- Installers now require SHA256 verification for release downloads, matching `aegis update`.
+- Version bumped to v6.0; example mods require v6.0; CMake/VS Code build lists include all new sources.
+
+### Fixed
+- Stale "update available" badge is cleared when the update disappears.
+- `aegis export --json [path]` now handles custom paths and `--txt` correctly; JSON escaping covers all control characters.
+- Settings import uses the safe validated Configs path instead of raw file copy.
+- `aegis mod publish <mod> [--strict|--no-strict]` no longer loses/misreads the mod key when flags come first.
+- Windows watcher keeps a queue of pending rename pairs and warns on buffer overflow; Linux warns when `inotify_add_watch` fails.
+- Helper folders now derive from the same config root (fixes non-ASCII Windows user names), quarantine records are sorted for stable numbering.
+- `emergencyActive()` expires on query, not only on the next file event.
+
+### Known limitations
+- `.github/workflows/mod-verify.yml` still needs `-Recurse` on the Windows `Get-ChildItem` line; the available token cannot edit workflow files.
+
 ## v5.0 — Biggest update in the project's history (Mod Platform, Automatic Mod Verification, Quality Update)
 
 ### Added

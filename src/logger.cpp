@@ -92,6 +92,10 @@ static void emit(const std::wstring& line, bool newline) {
 void console(const std::wstring& msg) { emit(msg, true); }
 void prompt(const std::wstring& msg)  { emit(msg, false); }
 
+void setAlertSink(AlertSink sink) {
+    Logger::instance().setAlertSink(std::move(sink));
+}
+
 static std::wstring timestamp() {
     auto now = std::chrono::system_clock::now();
     std::time_t t = std::chrono::system_clock::to_time_t(now);
@@ -140,11 +144,18 @@ void Logger::setTheme(const std::wstring& theme) {
     else theme_ = L"default";
 }
 
+void Logger::setAlertSink(AlertSink sink) {
+    std::lock_guard<std::mutex> lock(m_);
+    alertSink_ = std::move(sink);
+}
+
 void Logger::write(Level lvl, const std::wstring& msg) {
     std::wstring theme;
+    AlertSink sink;
     {
         std::lock_guard<std::mutex> lock(m_);
         theme = theme_;
+        sink = alertSink_;
     }
     const wchar_t* color = L"";
     const wchar_t* tag   = L"";
@@ -174,6 +185,12 @@ void Logger::write(Level lvl, const std::wstring& msg) {
     }
     std::wstring ts = timestamp();
     emit(ts + color + tag + L" \x1b[0m" + msg, true);
+
+    // Дублируем тревоги в трей/системные уведомления — вне мьютекса логгера,
+    // чтобы не получить deadlock при повторном входе в Logger из трея.
+    if (sink && (lvl == Level::Warn || lvl == Level::Alert)) {
+        try { sink(lvl, msg); } catch (...) {}
+    }
 
     std::lock_guard<std::mutex> lock(m_);
     if (lvl == Level::Warn || lvl == Level::Alert) {

@@ -2,7 +2,7 @@
 
 **Aegis** is a cross-platform guardian for your files. It watches your folders (Desktop, Documents, Downloads by default, or any folders you choose), detects ransomware-like behavior, and moves dangerous files into quarantine before they can be encrypted or destroyed.
 
-**Version:** v5.0 — the biggest update in the project's history (Mod Platform UI + author tools, automatic mod verification on publish/CI, and quality updates)  
+**Version:** v6.0 — global update: tray icon + MAXIMUM SECURITY, secret zoo, safe config sharing, Doctor, and the mod bot  
 **Author:** by narkomaniya
 
 ```
@@ -135,12 +135,15 @@ g++ -std=c++17 -O2 -Wall src\*.cpp -o build\aegis.exe -lshell32 -lole32 -luuid
 aegis                         # interactive menu (recommended)
 aegis watch [dir1 dir2 ...]   # watch folders (saved/custom or specified)
 aegis watch --daemon [...]    # non-interactive watch mode (service-friendly)
+aegis watch --tray [...]      # tray icon + MAXIMUM SECURITY while active
 aegis status                     # quick health/status summary
 aegis quarantine                 # show quarantine contents
 aegis restore [number]           # list or restore quarantined files
 aegis export [path] [--json]     # export quarantine/report (txt or json)
-aegis mod [list|path|ui|info|verify|enable|disable|create|apply|publish|open]
-                                 # mods/tweaks manager, author tools, automatic verification
+aegis mod [list|path|ui|info|verify|enable|disable|create|apply|publish|bot|open]
+                                 # mods/tweaks manager, author tools, mod bot
+aegis doctor                     # integrity checks + Security Score
+aegis configs                    # save/apply/import presets by link (diff + backup)
 aegis update [-y]                # self-update from GitHub Releases (SHA256 verified when checksums available)
 aegis autostart on|off           # enable/disable automatic background protection at login
 aegis service status|install|uninstall|start|stop
@@ -153,9 +156,36 @@ aegis help                       # help
 - **Quarantine:** view/restore/restore recent/delete/clear/open
 - **History / stats / search:** browse, filter, open locations
 - **Settings:** sensitivity, ultra-light, backups, folders, exclusions, auto-update, profiles, export/import, paths
+- **Configs:** save presets, apply with diff/backup, import by URL or local path, publish via `gh gist`
+- **Doctor:** binary SHA256, config/mods/autostart/canary checks, Security Score
 - **Diagnostics / Recent alerts / Export report / Update / Autostart / Help**
 
-While watching (CLI mode): `status`, `quarantine`, `restore [n]`, `help`, `q`.
+While watching: `status`, `quarantine`, `restore [n]`, `help`, `q`, and the secret animal commands.
+
+### Tray + MAXIMUM SECURITY (v6.0)
+
+Start `aegis watch --tray` (or Watch menu → **4**). While the tray icon is alive,
+Aegis automatically enables MAXIMUM SECURITY: rate/rename and `noteHit` limits are
+divided by 3, entropy thresholds drop to 6.8/7.1, and emergency mode lasts 60 s.
+All `WARN`/`ALERT` messages are mirrored to the tray (Windows balloon / POSIX
+`notify-send` or `osascript`). This is intentionally stricter than normal mode —
+a few extra false positives are the price of staying safer.
+
+### Configs (v6.0)
+
+`aegis configs` (main menu **11**) stores presets in `~/.aegis/configs/`. Importing
+a link never writes directly to `config.txt`: the file is downloaded to a temp
+location, limited to 256 KiB, checked against a key whitelist, shown as a diff,
+backed up, and only then applied atomically. Publishing uses `gh gist create --public`.
+
+## Mod bot (v6.0)
+
+`aegis mod bot <mod>|--all [--upload]` performs a deep `on_content` code scan in
+addition to strict manifest checks. Rejected patterns include dynamic execution,
+embedded PowerShell/curl pipes, base64 payloads, external URLs in code and
+`on_content=`/`payload=`/`script=` fields. Approved mods are copied to
+`~/.aegis/mods-approved/` together with a `.bot.txt` receipt containing SHA256
+and the check log. Only bot-approved artifacts are included in releases/installers.
 
 ## Paths
 
@@ -165,6 +195,8 @@ While watching (CLI mode): `status`, `quarantine`, `restore [n]`, `help`, `q`.
 - Quarantine: `~/.aegis/quarantine/`
 - Backups: `~/.aegis/backups/`
 - Report export: `~/.aegis/aegis-report.txt`
+- Config presets: `~/.aegis/configs/`
+- Approved mods: `~/.aegis/mods-approved/`
 
 ## User rules file (`rules.txt`)
 
@@ -197,11 +229,11 @@ GitHub Actions builds and smoke-tests on Windows, Linux, and macOS. On version t
 
 ## A little secret
 
-Even a shield gets lonely. If you know the three short sounds people make to call a stray cat, try typing exactly that into Aegis — in the terminal or in the menu. It is not listed in `aegis help`, of course.
+Even a shield gets lonely. If you know the three short sounds people make to call a stray cat, try typing exactly that into Aegis — in the terminal or in the menu. It is not listed in `aegis help`, of course. In v6.0 the secret grew up: `dog`, `fox`, `owl`, `penguin`, `dragon` and `zoo` (`зоопарк`) bring the whole hidden menagerie to life, each with its own 10-second in-place animation.
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md) for full release notes (v5.0 and earlier).
+See [CHANGELOG.md](CHANGELOG.md) for full release notes (v6.0 and earlier).
 
 ## About
 

@@ -23,6 +23,7 @@
 #include <thread>
 #include <csignal>
 #include <utility>
+#include <memory>
 
 #include "logger.h"
 #include "watcher.h"
@@ -33,6 +34,10 @@
 #include "autostart.h"
 #include "config.h"
 #include "mods.h"
+#include "animals.h"
+#include "tray.h"
+#include "configs.h"
+#include "doctor.h"
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -64,7 +69,7 @@ static void secretCat();   // скрытая команда (определен�
 static bool isCatCommand(const std::wstring& s);
 
 #ifdef _WIN32
-static std::wstring toW(const std::string& s) {
+[[maybe_unused]] static std::wstring toW(const std::string& s) {
     if (s.empty()) return L"";
     int n = MultiByteToWideChar(CP_ACP, 0, s.c_str(), (int)s.size(), nullptr, 0);
     std::wstring w(n, L'\0');
@@ -197,24 +202,21 @@ static bool parseIndex(const std::wstring& s, size_t& out) {
 static std::atomic<bool> g_stopRequested{false};
 static void onStopSignal(int) { g_stopRequested.store(true); }
 
-static std::wstring homeDir() {
+[[maybe_unused]] static std::wstring homeDir() {
 #ifdef _WIN32
-    const char* up = std::getenv("USERPROFILE");
-    return up ? toW(up) : L"";
+    //wide environment avoids CP_ACP mangling for non-ASCII user names
+    const wchar_t* up = _wgetenv(L"USERPROFILE");
+    return up ? std::wstring(up) : L"";
 #else
     const char* h = std::getenv("HOME");
     return h ? toW(h) : L"";
 #endif
 }
 
+// v6.0: all helper folders must share the same root as config.txt.
+// On Windows configPath() uses FOLDERID_Profile (correct for non-ASCII names).
 static std::wstring aegisDir() {
-    std::wstring home = homeDir();
-    if (home.empty()) home = L".";
-#ifdef _WIN32
-    return home + L"\\.aegis";
-#else
-    return home + L"/.aegis";
-#endif
+    return fs::path(configPath()).parent_path().wstring();
 }
 
 static std::wstring quarantineRoot() {
@@ -319,6 +321,7 @@ static void modsManagerMenu(Settings& settings) {
         console(L"  2. Enable/disable mod    6. Verify ALL mods");
         console(L"  3. Apply mod             7. Publish mod (auto verification + report)");
         console(L"  4. Create mod scaffold   8. Open mods folder");
+        console(L"  9. MOD BOT (deep scan + publish approved)");
         console(L"  r. Refresh               0. Back");
         console(L"");
         prompt(L"  > ");
@@ -327,6 +330,22 @@ static void modsManagerMenu(Settings& settings) {
         if (line == L"0" || line.empty()) return;
         if (line == L"r" || line == L"R") continue;
         if (line == L"8") { openPath(modsDirPath()); continue; }
+        if (line == L"9") {
+            showHeader(); console(L"  [ MOD BOT ]  deep on_content check + approval"); console(L"");
+            const auto all = scanMods(settings);
+            if (all.empty()) { warn(L"no mods installed"); }
+            else {
+                int rc = 0;
+                for (const auto& mm : all) {
+                    auto r = botPublishMod(mm);
+                    if (r.approved) ok(L"APPROVED: " + mm.name + L" -> " + r.artifact);
+                    else { warn(L"REJECTED: " + mm.name + L" — " + r.reason); rc = 1; }
+                }
+                if (rc == 0) console(L"  Approved mods are ready for release upload (aegis mod bot --all --upload).");
+            }
+            waitEnter();
+            continue;
+        }
         if (line == L"4") {
             showHeader(); console(L"  [ CREATE MOD SCAFFOLD ]"); console(L"");
             console(L"  Enter mod name/id (e.g. my-cool-tweak):"); prompt(L"  > ");
@@ -504,9 +523,11 @@ static int runModCommand(const std::vector<std::wstring>& argsIn) {
         bool strict = true;
         std::wstring key;
         for (size_t i=1;i<args.size();++i) {
-            if (args[i]==L"--no-strict") strict = false; else key = args[i];
+            if (args[i]==L"--no-strict") strict = false;
+            else if (args[i]==L"--strict") strict = true;
+            else if (args[i].compare(0, 2, L"--") != 0) { if (key.empty()) key = args[i]; }
         }
-        if (key.empty()) key = args[1];
+        if (key.empty() && args.size() > 1) key = args[1];
         auto m = findModByKey(s, key);
         if (m.path.empty()) { warn(L"mod not found: " + key); return 1; }
         console(L"Running automatic publish verification checks...");
@@ -517,11 +538,46 @@ static int runModCommand(const std::vector<std::wstring>& argsIn) {
         return pass ? 0 : 1;
     }
 
+    if (args[0] == L"bot") {
+        bool all = false, upload = false;
+        std::wstring key;
+        for (size_t i = 1; i < args.size(); ++i) {
+            if (args[i] == L"--all" || args[i] == L"-a") all = true;
+            else if (args[i] == L"--upload") upload = true;
+            else key = args[i];
+        }
+        std::vector<ModManifest> targets;
+        if (all || key.empty()) targets = scanMods(s);
+        else {
+            auto m = findModByKey(s, key);
+            if (m.path.empty()) { warn(L"mod not found: " + key); return 1; }
+            targets.push_back(m);
+        }
+        if (targets.empty()) { warn(L"no mods to review"); return 0; }
+        int rc = 0;
+        for (const auto& m : targets) {
+            console(L"");
+            console(L"  [ MOD BOT ] " + m.name + L" — deep on_content check...");
+            auto r = botPublishMod(m);
+            for (const auto& f : r.findings) console(L"    " + f);
+            if (!r.approved) { warn(L"BOT REJECTED " + m.file + L": " + r.reason); rc = 1; continue; }
+            ok(L"BOT APPROVED: " + r.artifact);
+            console(L"  Receipt: " + r.receipt);
+            if (upload) {
+                std::wstring err;
+                if (uploadModArtifact(std::wstring(kVersion), r.artifact, err)) ok(L"Uploaded artifact to release " + std::wstring(kVersion));
+                else warn(err);
+            }
+        }
+        return rc;
+    }
+
     if (args[0] == L"open") { openPath(modsDirPath()); return 0; }
 
     warn(L"unknown mod subcommand: " + args[0]);
-    console(L"usage: aegis mod [list|path|ui|info|verify|enable|disable|create|apply|publish|open]");
+    console(L"usage: aegis mod [list|path|ui|info|verify|enable|disable|create|apply|publish|bot|open]");
     console(L"  verify: [mod|--all] [--strict]   publish: <mod> (strict auto-checks + report)");
+    console(L"  bot: <mod>|--all [--upload]      deep on_content scan, approval receipt, release artifact");
     return 1;
 }
 
@@ -632,12 +688,15 @@ static void printHelp() {
     console(L"  aegis                            interactive menu");
     console(L"  aegis watch [dir1 dir2 ...]      watch folders (default or saved/custom)");
     console(L"  aegis watch --daemon [dirs...]   watch without interactive command loop (service-friendly)");
+    console(L"  aegis watch --tray [dirs...]     tray icon + MAXIMUM SECURITY while active");
     console(L"  aegis status                     quick health/status summary");
     console(L"  aegis quarantine                 show quarantine contents");
     console(L"  aegis restore [number]           list or restore quarantined files");
     console(L"  aegis export [path]              export quarantine/report (txt; .json for JSON)");
     console(L"  aegis mod [list|path|ui|info|verify|enable|disable|create|apply|publish|open]");
     console(L"                                   mods/tweaks manager + author tools + automatic verification");
+    console(L"  aegis doctor                     integrity check + Security Score");
+    console(L"  aegis configs                    safe preset sharing (import by link)");
     console(L"  aegis update [-y]                check GitHub and update Aegis itself");
     console(L"  aegis autostart on|off           enable/disable automatic background protection at login");
     console(L"  aegis service status|install|uninstall  background/service helper (uses autostart/daemon, best effort)");
@@ -646,7 +705,8 @@ static void printHelp() {
     console(L"Commands while watching (CLI mode):");
     console(L"  status  quarantine  restore [n]  help  q");
     console(L"");
-    console(L"P.S. even a shield gets lonely. Try the three little sounds for a stray cat.");
+    console(L"P.S. even a shield gets lonely. Try the three little sounds for a stray cat —");
+    console(L"    or ask the quiet menu to let the whole secret zoo out for a walk.");
 }
 
 static bool openPath(const std::wstring& path) {
@@ -887,6 +947,12 @@ static int exportReportTo(const std::wstring& pathW, bool json) {
                 else if(c=='\n'){ o += "\\n"; }
                 else if(c=='\r'){ o += "\\r"; }
                 else if(c=='\t'){ o += "\\t"; }
+                else if(c=='\b'){ o += "\\b"; }
+                else if(c=='\f'){ o += "\\f"; }
+                else if((unsigned char)c < 0x20){
+                    static const char* hex="0123456789abcdef";
+                    o += "\\u00"; o.push_back(hex[((unsigned char)c>>4)&0xF]); o.push_back(hex[(unsigned char)c&0xF]);
+                }
                 else { o.push_back(c); }
             }
             return o;
@@ -1211,9 +1277,10 @@ static void settingsMenu(Settings& settings) {
             console(L"  Enter source file path (or empty to cancel):"); prompt(L"  > ");
             std::wstring p; if(!std::getline(std::wcin,p)) return; p=trimW(p);
             if(!p.empty()){
-                std::error_code ec; fs::create_directories(fs::path(configPath()).parent_path(), ec);
-                ec.clear(); fs::copy_file(fs::path(p), fs::path(configPath()), fs::copy_options::overwrite_existing, ec);
-                if(ec) warn(L"Import failed."); else { settings = loadSettings(); applyUiTheme(settings); ok(L"Settings imported."); }
+                // v6.0: validated import — whitelist keys, diff, backup, atomic replace.
+                auto result = importConfigLink(p);
+                if(!result.ok) warn(L"Import failed: " + result.message);
+                else { settings = loadSettings(); applyUiTheme(settings); ok(L"Settings imported safely."); }
                 waitEnter();
             }
         } else if (line == L"12") {
@@ -1249,7 +1316,7 @@ static void helpScreen() {
     waitEnter();
 }
 
-static int runWatch(const Settings& inSettings, bool fromMenu, std::vector<std::wstring> overrideDirs = {}, bool daemonMode = false) {
+static int runWatch(const Settings& inSettings, bool fromMenu, std::vector<std::wstring> overrideDirs = {}, bool daemonMode = false, bool trayMode = false) {
     Settings settings = inSettings;
     applyUiTheme(settings);
     loadUserRules(settings); // merge extra exclusions from ~/.aegis/rules.txt
@@ -1276,6 +1343,28 @@ static int runWatch(const Settings& inSettings, bool fromMenu, std::vector<std::
         for (auto& wf : wfs) fsens.push_back({wf.path, wf.sensitivity});
     }
     engine.setFolderSensitivities(fsens);
+
+    // v6.0: пока активна трей-иконка, Aegis переключается в режим максимальной
+    // безопасности, а все warn/alert дублируются в системные уведомления.
+    std::unique_ptr<Tray> tray;
+    std::atomic<bool> trayStatusRequested{false};
+    std::atomic<bool> trayQuarantineRequested{false};
+    std::atomic<bool> trayStopRequested{false};
+    if (trayMode) {
+        tray.reset(new Tray());
+        setAlertSink([t = tray.get()](Level lvl, const std::wstring& msg) {
+            t->notify(lvl == Level::Alert ? L"Aegis: threat detected"
+                                          : L"Aegis: warning", msg);
+        });
+        engine.setMaxSecurity(true);
+    }
+    struct TrayGuard {
+        Tray* t; Engine* e;
+        ~TrayGuard() {
+            if (t) { ae::setAlertSink(AlertSink()); t->stop(); e->setMaxSecurity(false); }
+        }
+    } guard{tray.get(), &engine};
+
     engine.seedCanaries();
     Watcher watcher([&engine](const FileEvent& e) { engine.onEvent(e); });
 
@@ -1294,20 +1383,58 @@ static int runWatch(const Settings& inSettings, bool fromMenu, std::vector<std::
     if (!daemonMode) console(L"");
     watcher.start();
 
+    if (tray) {
+        TrayCallbacks cb;
+        cb.status      = [&] { trayStatusRequested.store(true); };
+        cb.quarantine  = [&] { trayQuarantineRequested.store(true); };
+        cb.toggleMax   = [&] {
+            const bool on = !engine.maxSecurity();
+            engine.setMaxSecurity(on);
+            tray->setMaxSecurity(on);
+            info(std::wstring(L"Tray: maximum security ") + (on ? L"ON" : L"OFF"));
+        };
+        cb.stop        = [&] { trayStopRequested.store(true); g_stopRequested.store(true); };
+        if (tray->start(cb)) {
+            tray->setMaxSecurity(true);
+            ok(L"Tray active — MAXIMUM SECURITY enabled (stricter detection)");
+        } else {
+            warn(L"tray icon unavailable — protection continues without it");
+        }
+    }
+
     if (daemonMode) {
         console(L"Running in daemon/non-interactive mode. Stop with Ctrl+C / SIGTERM.");
         std::signal(SIGINT, onStopSignal);
         std::signal(SIGTERM, onStopSignal);
         // stdin в сервисе обычно /dev/null: ждать его закрытия — значит выйти
         // сразу. Ждём сигнал остановки.
-        while (!g_stopRequested.load())
+        while (!g_stopRequested.load() && !trayStopRequested.load()) {
+            if (trayStatusRequested.exchange(false)) {
+                info(L"Tray status: events=" + std::to_wstring(engine.eventCount()) +
+                     L" alerts=" + std::to_wstring(engine.alertCount()) +
+                     L" quarantined=" + std::to_wstring(engine.quarantinedCount()));
+            }
+            if (trayQuarantineRequested.exchange(false)) {
+                info(L"Tray: quarantined " + std::to_wstring(q.count()) + L" item(s)");
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        }
         watcher.stop();
         ok(L"Aegis stopped. Talk soon!");
         return 0;
     }
 
     while (true) {
+        if (trayStopRequested.load()) break;
+        if (trayStatusRequested.exchange(false)) {
+            console(L"  [TRAY] events=" + std::to_wstring(engine.eventCount()) +
+                    L" alerts=" + std::to_wstring(engine.alertCount()) +
+                    L" quarantined=" + std::to_wstring(engine.quarantinedCount()) +
+                    L" max-security=" + (engine.maxSecurity() ? L"ON" : L"OFF"));
+        }
+        if (trayQuarantineRequested.exchange(false)) {
+            console(L"  [TRAY] quarantine: " + std::to_wstring(q.count()) + L" item(s)");
+        }
         if (fromMenu) {
             showHeader();
             console(L"  [ WATCHING ]  Aegis is on duty");
@@ -1345,6 +1472,7 @@ static int runWatch(const Settings& inSettings, bool fromMenu, std::vector<std::
                 console(L"  quarantined:     " + std::to_wstring(engine.quarantinedCount()));
                 console(L"  alerts:          " + std::to_wstring(engine.alertCount()));
                 console(L"  emergency mode:  " + std::wstring(engine.emergencyActive() ? L"YES" : L"no"));
+                console(L"  max security:    " + std::wstring(engine.maxSecurity() ? L"YES (tray)" : L"no"));
                 console(L"  folders watched: " + std::to_wstring(added));
                 console(L"  sensitivity:     " + sensitivityName(settings.sensitivity) + (settings.ultraLight?L" (ultra-light)":L""));
                 console(L"  exclusions:      " + std::to_wstring(settings.excludePaths.size()) + L" paths, " + std::to_wstring(settings.excludeExts.size()) + L" exts");
@@ -1359,6 +1487,10 @@ static int runWatch(const Settings& inSettings, bool fromMenu, std::vector<std::
                 doRestoreByNumber(q, &engine, trimW(line.substr(8))); waitEnter();
             } else if (low == L"4" || low == L"help") {
                 helpScreen();
+            } else if (isCatCommand(low)) {
+                secretCat();
+            } else if (!low.empty()) {
+                console(L"unknown command: try help");
             }
         } else {
             if (low == L"q" || low == L"quit" || low == L"exit") stop = true;
@@ -1367,6 +1499,7 @@ static int runWatch(const Settings& inSettings, bool fromMenu, std::vector<std::
                 console(L"  quarantined:     " + std::to_wstring(engine.quarantinedCount()));
                 console(L"  alerts:          " + std::to_wstring(engine.alertCount()));
                 console(L"  emergency mode:  " + std::wstring(engine.emergencyActive() ? L"YES" : L"no"));
+                console(L"  max security:    " + std::wstring(engine.maxSecurity() ? L"YES (tray)" : L"no"));
                 console(L"  folders watched: " + std::to_wstring(added));
             } else if (low == L"quarantine") { auto items=q.list(); if(items.empty()) console(L"  quarantine is empty"); for(auto&it:items) console(L"  - "+it); }
             else if (low == L"restore") { printRecordList(q); console(L"  to restore: restore <number>"); }
@@ -1411,6 +1544,7 @@ static void watchMenu(Settings& settings) {
         console(L"  1. Start watching now");
         console(L"  2. Configure watched folders");
         console(L"  3. Settings (sensitivity/exclusions/ultra-light)");
+        console(L"  4. Start with TRAY + MAXIMUM SECURITY");
         console(L"  0. Back");
         console(L"");
         prompt(L"  > ");
@@ -1420,108 +1554,25 @@ static void watchMenu(Settings& settings) {
         if (line == L"1") runWatch(settings, true);
         else if (line == L"2") foldersMenu(settings);
         else if (line == L"3") settingsMenu(settings);
+        else if (line == L"4") runWatch(settings, true, {}, false, true);
     }
 }
 
-// Секретная команда: её нет в help. Кот приходит на "pspsps" (так зовут кота)
-// и живёт ровно 10 секунд, виляя хвостом. Ничего не трогает в системе.
+// Секретная команда: её нет в help. С v6.0 это целый скрытый зоопарк —
+// кот, пёс, лисёнок, сова, пингвин и дракончик, у каждого своя анимация.
+// Старые точки вызова isCatCommand()/secretCat() оставлены для совместимости.
+static std::wstring g_animalRequest;
 
-// Принимаем разные написания: регистронезависимо, русскую раскладку
-// (p -> з, s -> ы) и пару «человеческих» слов — чтобы секрет точно сработал.
 static bool isCatCommand(const std::wstring& s) {
-    const std::wstring t = lowerW(s);
-    return t == L"pspsps" || t == L"pspsps!" || t == L"psps" ||
-           t == L"p-s-p-s" || t == L"meow" || t == L"cat" ||
-           t == L"kitten" || t == L"мяу" || t == L"зызызы";
+    g_animalRequest = lowerW(s);
+    return ae::findAnimal(s) != nullptr || ae::isZooCommand(s);
 }
 
 static void secretCat() {
-    // 8 кадров — хвост плавно проходит весь путь, а не дёргается между 4 позами.
-    static const wchar_t* kArt[8][3] = {
-        { L"  /\\_/\\", L" ( o.o )~~~", L"  > ^ <   ~" },
-        { L"  /\\_/\\", L" ( o.o )  /", L"  > ^ < /  " },
-        { L"  /\\_/\\", L" ( o.o ) / ", L"  > ^ </   " },
-        { L"  /\\_/\\", L" ( -.- ) | ", L"  > ^ <|   " },
-        { L"  /\\_/\\", L" ( o.o ) \\ ", L"  > ^ < \\  " },
-        { L"  /\\_/\\", L" ( o.o )  \\", L"  > ^ <  \\ " },
-        { L"  /\\_/\\", L" ( o.o )~~ ", L"  > ^ < ~  " },
-        { L"  /\\_/\\", L" ( o.o )~  ", L"  > ^ <~~  " },
-    };
-    // Однострочный запасной вариант: перерисовывается одним '\r' даже там,
-    // где нет курсорного API и ANSI (например, в перенаправленном выводе).
-    static const wchar_t* kInline[8] = {
-        L"  /\\_/\\  ( o.o )  > ^ <  ~~~~",
-        L"  /\\_/\\  ( o.o )  > ^ <  ~~~/",
-        L"  /\\_/\\  ( o.o )  > ^ <  ~~ /",
-        L"  /\\_/\\  ( -.- )  > ^ <  ~|  ",
-        L"  /\\_/\\  ( o.o )  > ^ <  |   ",
-        L"  /\\_/\\  ( o.o )  > ^ <  \\   ",
-        L"  /\\_/\\  ( o.o )  > ^ <  ~\\  ",
-        L"  /\\_/\\  ( o.o )  > ^ <  ~~  ",
-    };
-    std::wcout.clear();   // сбрасываем failbit от возможного прошлого вывода
-
-#ifndef _WIN32
-    const bool inPlace = isatty(1) != 0;   // можно ли перерисовывать арт на месте
-#endif
-#ifdef _WIN32
-    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
-    CONSOLE_SCREEN_BUFFER_INFO csbi{};
-    const bool canMove = hOut != INVALID_HANDLE_VALUE &&
-                         GetConsoleScreenBufferInfo(hOut, &csbi) != 0;
-    const COORD home = canMove ? csbi.dwCursorPosition : COORD{0, 0};
-#endif
-
-    const auto finishAt = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-    size_t frame = 0;
-    while (std::chrono::steady_clock::now() < finishAt) {
-        const auto& art = kArt[frame % 8];
-#ifdef _WIN32
-        if (canMove) {
-            // Пишем напрямую в консоль, минуя CRT-преобразование '\n' — так
-            // курсор гарантированно возвращается в исходную точку кадра.
-            SetConsoleCursorPosition(hOut, home);
-            const std::wstring s = std::wstring(art[0]) + L"\r\n" +
-                                   art[1] + L"\r\n" + art[2];
-            DWORD written = 0;
-            WriteConsoleW(hOut, s.c_str(), (DWORD)s.size(), &written, nullptr);
-        } else {
-            // Нет консоли — анимируем одну строку возвратом каретки.
-            std::wcout << L'\r' << kInline[frame % 8];
-            std::wcout.flush();
-        }
-#else
-        if (inPlace)
-            std::wcout << (frame ? L"\033[2A\r" : L"")
-                       << art[0] << L"\r\n" << art[1] << L"\r\n" << art[2];
-        else
-            std::wcout << L'\r' << kInline[frame % 8];
-        std::wcout.flush();
-#endif
-        ++frame;
-        std::this_thread::sleep_for(std::chrono::milliseconds(90));
-    }
-
-    // Оставляем кота на экране и дописываем финальную фразу.
-#ifdef _WIN32
-    if (canMove) {
-        SetConsoleCursorPosition(hOut, home);
-        const std::wstring s = std::wstring(kArt[0][0]) + L"\r\n" +
-                               kArt[0][1] + L"\r\n" + kArt[0][2] +
-                               L"\r\n   ...mrrp.\n";
-        DWORD written = 0;
-        WriteConsoleW(hOut, s.c_str(), (DWORD)s.size(), &written, nullptr);
-    } else {
-        std::wcout << L'\r' << kInline[0] << L"\r\n   ...mrrp.\n";
-        std::wcout.flush();
-    }
-#else
-    if (inPlace) std::wcout << L"\033[2A\r";
-    else std::wcout << L'\r';
-    std::wcout << kArt[0][0] << L"\r\n" << kArt[0][1] << L"\r\n" << kArt[0][2]
-               << L"\r\n   ...mrrp.\n";
-    std::wcout.flush();
-#endif
+    if (ae::isZooCommand(g_animalRequest)) { ae::zooMenu(); return; }
+    const ae::Animal* a = ae::findAnimal(g_animalRequest);
+    if (!a) a = ae::findAnimal(L"cat");
+    if (a) ae::playAnimal(*a, 10);
 }
 
 static int interactiveMenu() {
@@ -1532,29 +1583,44 @@ static int interactiveMenu() {
         if (!latest.empty()) {
             settings.lastUpdateAvailable = true; settings.lastUpdateVersion = latest;
             saveSettings(settings);
-        } else {
-            // keep quiet; don't spam
+        } else if (settings.lastUpdateAvailable) {
+            // v6.0: clear a stale badge when the update is no longer reported.
+            settings.lastUpdateAvailable = false;
+            settings.lastUpdateVersion.clear();
+            saveSettings(settings);
         }
     }
     while (true) {
         settings = loadSettings();
         showHeader();
-        console(L"  [ MAIN MENU ]");
+        console(L"  \x1b[36m\u2501\u2501\u2501 MAIN MENU \u2501\u2501\u2501\u2501\u2501\u2501\x1b[0m");
         console(L"");
+        // v6.0 status strip — health at a glance, before any action.
+        console(L"  \x1b[90mprofile: " + sensitivityName(settings.sensitivity) +
+                (settings.ultraLight ? L"/ultra" : L"") +
+                L"   theme: " + settings.uiTheme +
+                L"   language: " + settings.language +
+                L"   tray: available (menu 1 > 4)\x1b[0m");
         if (settings.lastUpdateAvailable && !settings.lastUpdateVersion.empty())
-            console(L"  * Update available: " + settings.lastUpdateVersion + L"  (see Update)");
-        console(L"  1. Watch / protect folders");
-        console(L"  2. Quarantine (view / restore / delete)");
-        console(L"  3. History / stats / search");
-        console(L"  4. Settings (sensitivity, folders, exclusions, themes)");
-        console(L"  5. Mods / Tweaks Manager (interface, verify, publish)");
-        console(L"  6. Diagnostics / check setup");
-        console(L"  7. Recent alerts buffer");
-        console(L"  8. Export report");
-        console(L"  9. Update Aegis");
-        console(L" 10. Autostart / background protection");
-        console(L"  h. Help");
-        console(L"  0. Exit");
+            console(L"  \x1b[33m* Update available: " + settings.lastUpdateVersion + L"  (see Update)\x1b[0m");
+        console(L"");
+        console(L"  \x1b[1mPROTECT\x1b[0m");
+        console(L"   1. Watch / protect folders");
+        console(L"   2. Quarantine (view / restore / delete)");
+        console(L"   3. History / stats / search");
+        console(L"   7. Recent alerts buffer");
+        console(L"  \x1b[1mCUSTOMIZE\x1b[0m");
+        console(L"   4. Settings (sensitivity, folders, exclusions, themes)");
+        console(L"   5. Mods / Tweaks Manager (verify, bot, publish)");
+        console(L"  11. Configs (share / import presets by link)");
+        console(L"  \x1b[1mSYSTEM\x1b[0m");
+        console(L"   6. Diagnostics / check setup");
+        console(L"   8. Export report");
+        console(L"   9. Update Aegis");
+        console(L"  10. Autostart / background protection");
+        console(L"  12. Doctor (integrity + security score)");
+        console(L"   h. Help");
+        console(L"   0. Exit");
         console(L"");
         prompt(L"  > ");
         std::wstring line; if (!std::getline(std::wcin, line)) break;
@@ -1571,6 +1637,8 @@ static int interactiveMenu() {
         else if (low == L"8" || low == L"export") exportReport();
         else if (low == L"9" || low == L"update") updateMenu();
         else if (low == L"10" || low == L"autostart" || low == L"background") autostartMenu();
+        else if (low == L"11" || low == L"configs" || low == L"config") { configsMenu(); settings = loadSettings(); applyUiTheme(settings); }
+        else if (low == L"12" || low == L"doctor") doctorMenu();
         else if (low == L"h" || low == L"help") helpScreen();
         else if (isCatCommand(low)) secretCat();
         else if (low == L"0" || low == L"q" || low == L"exit") {
@@ -1626,9 +1694,11 @@ int main(int argc, char** argv) {
         Settings s = loadSettings();
         applyUiTheme(s);
         bool daemon = false;
+        bool tray = false;
         std::vector<std::wstring> dirs;
         for (auto& a : args) {
             if (a == L"--daemon" || a == L"-d") daemon = true;
+            else if (a == L"--tray" || a == L"-t") tray = true;
             else dirs.push_back(a);
         }
 #ifdef _WIN32
@@ -1639,19 +1709,22 @@ int main(int argc, char** argv) {
         }
 #endif
         if (!daemon) banner();
-        if (dirs.empty()) return runWatch(s, false, {}, daemon);
-        return runWatch(s, false, dirs, daemon);
+        if (dirs.empty()) return runWatch(s, false, {}, daemon, tray);
+        return runWatch(s, false, dirs, daemon, tray);
     }
     if (args[0] == L"quarantine") { banner(); return runQuarantineList(); }
     if (args[0] == L"export") {
         banner(); args.erase(args.begin());
         bool json = false;
-        std::wstring path = (fs::path(aegisDir()) / L"aegis-report.txt").wstring();
+        bool explicitPath = false;
+        std::wstring path;
         for (auto& a : args) {
-            if (a == L"--json") json = true;
-            else path = a;
+            if (a == L"--json" || a == L"-j") json = true;
+            else if (a == L"--txt" || a == L"-t") json = false;
+            else { path = a; explicitPath = true; }
         }
-        if (json && path.find(L".json") == std::wstring::npos && args.size() <= 1) path = (fs::path(aegisDir()) / L"aegis-report.json").wstring();
+        if (!explicitPath)
+            path = (fs::path(aegisDir()) / (json ? L"aegis-report.json" : L"aegis-report.txt")).wstring();
         int rc = exportReportTo(path, json);
         if (rc == 0) ok(L"Report exported: " + path); else warn(L"Export failed.");
         return rc;
@@ -1676,6 +1749,8 @@ int main(int argc, char** argv) {
         if (args.empty()) return runServiceCommand(L"status");
         return runServiceCommand(args[0]);
     }
+    if (args[0] == L"doctor") { banner(); return runDoctor(); }
+    if (args[0] == L"configs") { banner(); configsMenu(); return 0; }
     if (args[0] == L"restore") {
         banner(); args.erase(args.begin());
         Quarantine q(quarantineRoot());

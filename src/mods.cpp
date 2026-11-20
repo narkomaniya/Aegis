@@ -5,9 +5,12 @@
 #include "logger.h"
 #include "version.h"
 #include "config.h"
+#include "updater.h"
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
+#include <iterator>
 #include <cctype>
 #include <cstring>
 #include <fstream>
@@ -384,6 +387,214 @@ bool publishMod(const ModManifest& m, bool strict, std::wstring& reportPath, std
     summary = (vr.ok ? L"Publish verification PASSED" : L"Publish verification FAILED") +
               std::wstring(L". Report: ") + reportPath + artifactNote;
     return vr.ok;
+}
+
+// ---------------------------------------------------------------------------
+// v6.0 MOD BOT: checks the *content* of a mod (including on_content code),
+// then produces a signed-off artifact + approval receipt for release.
+// ---------------------------------------------------------------------------
+
+std::wstring approvedModsDir() {
+    return (fs::path(aegisDirLocal()) / L"mods-approved").wstring();
+}
+
+namespace {
+
+std::string lowerAscii(std::string s) {
+    for (char& c : s) c = (char)std::tolower((unsigned char)c);
+    return s;
+}
+
+std::wstring fromAscii(const std::string& s) {
+    return std::wstring(s.begin(), s.end());
+}
+
+int compareVersions(const std::wstring& a, const std::wstring& b) {
+    auto parts = [](const std::wstring& v) {
+        std::vector<int> out;
+        std::wstring cur;
+        for (wchar_t c : v) {
+            if (c >= L'0' && c <= L'9') cur.push_back(c);
+            else if (!cur.empty()) { out.push_back(std::stoi(cur)); cur.clear(); }
+        }
+        if (!cur.empty()) out.push_back(std::stoi(cur));
+        return out;
+    };
+    auto pa = parts(a), pb = parts(b);
+    const size_t n = std::max(pa.size(), pb.size());
+    for (size_t i = 0; i < n; ++i) {
+        const int x = i < pa.size() ? pa[i] : 0;
+        const int y = i < pb.size() ? pb[i] : 0;
+        if (x != y) return x < y ? -1 : 1;
+    }
+    return 0;
+}
+
+bool looksBase64Blob(const std::string& s) {
+    if (s.size() < 120) return false;
+    size_t valid = 0;
+    for (unsigned char c : s) {
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+            (c >= '0' && c <= '9') || c == '+' || c == '/' || c == '=') ++valid;
+    }
+    return valid * 100 / s.size() >= 90;
+}
+
+} // namespace
+
+ModBotResult botReviewMod(const ModManifest& m) {
+    ModBotResult r;
+    auto vr = verifyMod(m, true);
+    if (!vr.ok) {
+        r.reason = L"strict verification failed";
+        for (const auto& e : vr.errors) r.findings.push_back(L"ERROR: " + e);
+        return r;
+    }
+
+    // Bot only signs off mature mods.
+    const std::wstring st = lowerWLocal(m.status);
+    if (st != L"stable" && st != L"verified") {
+        r.reason = L"bot publishes only status=stable or status=verified mods";
+        r.findings.push_back(L"set status=stable (or verified) in the manifest");
+        return r;
+    }
+    if (!m.minVersion.empty() && compareVersions(m.minVersion, kVersion) > 0) {
+        r.reason = L"mod requires a newer Aegis (" + m.minVersion + L")";
+        return r;
+    }
+
+    std::ifstream f(fs::path(m.path), std::ios::binary);
+    if (!f) { r.reason = L"cannot read mod file"; return r; }
+    std::string raw((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    if (raw.size() > 2 * 1024 * 1024) {
+        r.reason = L"mod content exceeds 2 MiB bot limit";
+        return r;
+    }
+
+    // High-signal dangerous constructs. Only *code* lines are checked:
+    // comment lines (# / ;) are reported as info so example snippets don't
+    // silently hide a real payload further down.
+    static const char* kDanger[] = {
+        "<script", "javascript:", "powershell -enc", "powershell -e ",
+        "frombase64string", "invoke-expression", "iex(", "downloadstring",
+        "curl | sh", "wget | sh", "curl http", "wget http",
+        "rm -rf /", "format c:", "del /f /s /q", "schtasks /create",
+        "reg add hkey_current_user\\software\\microsoft\\windows\\currentversion\\run",
+        "os.system", "subprocess.", "eval(", "exec(", "system(",
+        "createprocess", "virtualalloc", "writeprocessmemory", "shellexecute",
+        "wscript.shell", "rundll32", "certutil -decode", "bitsadmin",
+        "/dev/tcp", "nc -e", "base64 -d", "bash -c", "sh -c",
+        "on_content", "payload=", "script=", "code="
+    };
+
+    bool blocked = false;
+    size_t lineNo = 0;
+    std::istringstream ss(raw);
+    std::string line;
+    while (std::getline(ss, line)) {
+        ++lineNo;
+        if (line.size() > 16384) { r.reason = L"line " + std::to_wstring(lineNo) + L" is too long"; return r; }
+        const std::string low = lowerAscii(line);
+        const bool comment = !low.empty() && (low[0] == '#' || low[0] == ';');
+        if (looksBase64Blob(line)) {
+            r.findings.push_back(L"embedded base64-like blob at line " + std::to_wstring(lineNo));
+            if (!comment) blocked = true;
+            continue;
+        }
+        for (const char* pat : kDanger) {
+            if (low.find(pat) == std::string::npos) continue;
+            const std::wstring msg = L"pattern '" + fromAscii(pat) + L"' at line " + std::to_wstring(lineNo);
+            if (comment) r.findings.push_back(L"INFO: " + msg);
+            else { r.findings.push_back(L"ERROR: " + msg); blocked = true; }
+        }
+        // External fetch in code is never allowed; homepage/comment fields are fine.
+        if (!comment && (low.find("https://") != std::string::npos ||
+                         low.find("http://") != std::string::npos) &&
+            low.find("homepage=") == std::string::npos &&
+            low.find("url=") == std::string::npos) {
+            r.findings.push_back(L"ERROR: external URL in code at line " + std::to_wstring(lineNo));
+            blocked = true;
+        }
+    }
+
+    if (blocked) {
+        r.reason = L"bot found unsafe code content — mod rejected";
+        return r;
+    }
+
+    r.approved = true;
+    r.reason = L"bot checks passed (manifest + on_content code scan)";
+    if (r.findings.empty()) r.findings.push_back(L"no dangerous patterns, no embedded payloads");
+    return r;
+}
+
+ModBotResult botPublishMod(const ModManifest& m) {
+    ModBotResult r = botReviewMod(m);
+    if (!r.approved) return r;
+
+    std::error_code ec;
+    const fs::path dir(approvedModsDir());
+    fs::create_directories(dir, ec);
+    if (ec) { r.approved = false; r.reason = L"cannot create approved mods folder"; return r; }
+
+    auto safeName = [](std::wstring s) {
+        for (wchar_t& c : s) {
+            if (c == L'/' || c == L'\\' || c == L':' || c == L'*' || c == L'?' ||
+                c == L'"' || c == L'<' || c == L'>' || c == L'|') c = L'_';
+        }
+        return s;
+    };
+    const std::wstring base = safeName(m.id.empty() ? m.name : m.id) + L"-" +
+                              safeName(m.version.empty() ? L"0.0.0" : m.version);
+    const fs::path artifact = dir / (base + L".aegismod");
+    fs::copy_file(fs::path(m.path), artifact, fs::copy_options::overwrite_existing, ec);
+    if (ec) { r.approved = false; r.reason = L"cannot copy mod artifact"; return r; }
+
+    const std::string hash = computeSha256OfFile(artifact.wstring());
+    const fs::path receipt = dir / (base + L".bot.txt");
+    std::ofstream out(receipt, std::ios::binary | std::ios::trunc);
+    if (!out) { r.approved = false; r.reason = L"cannot write bot receipt"; return r; }
+    out << "Aegis Mod Bot Approval\n";
+    out << "App version: " << wToUtf8(kVersion) << "\n";
+    out << "Mod: " << wToUtf8(m.name) << " (id=" << wToUtf8(m.id) << ", v" << wToUtf8(m.version) << ")\n";
+    out << "SHA256: " << hash << "\n";
+    out << "Checks: strict manifest verification, status/min_version, deep on_content code scan\n";
+    out << "Result: APPROVED\n\nFindings:\n";
+    for (const auto& f : r.findings) out << "- " << wToUtf8(f) << "\n";
+    out.flush();
+    if (!out) { r.approved = false; r.reason = L"cannot finish bot receipt"; return r; }
+
+    r.artifact = artifact.wstring();
+    r.receipt = receipt.wstring();
+    return r;
+}
+
+bool uploadModArtifact(const std::wstring& tag, const std::wstring& artifact, std::wstring& error) {
+    if (tag.empty() || artifact.empty()) { error = L"missing tag or artifact"; return false; }
+#ifdef _WIN32
+    std::wstring cmd = L"gh release upload \"" + tag + L"\" \"" + artifact + L"\" --clobber 2>&1";
+    FILE* pipe = _wpopen(cmd.c_str(), L"r");
+#else
+    const std::string c = "gh release upload \"" + std::string(tag.begin(), tag.end()) +
+                          "\" \"" + std::string(artifact.begin(), artifact.end()) + "\" --clobber 2>&1";
+    FILE* pipe = popen(c.c_str(), "r");
+#endif
+    if (!pipe) { error = L"cannot run gh (is GitHub CLI installed?)"; return false; }
+    char buf[512] = {};
+    std::string output;
+    while (fgets(buf, sizeof(buf), pipe)) output += buf;
+#ifdef _WIN32
+    _pclose(pipe);
+#else
+    pclose(pipe);
+#endif
+    if (output.find("Uploaded") == std::string::npos &&
+        output.find("uploaded") == std::string::npos &&
+        output.find("done") == std::string::npos) {
+        error = L"gh release upload failed: " + std::wstring(output.begin(), output.end());
+        return false;
+    }
+    return true;
 }
 
 std::wstring createModScaffold(const std::wstring& nameIn, std::wstring& outPath, std::wstring& err) {

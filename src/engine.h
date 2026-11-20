@@ -42,6 +42,9 @@ public:
 
     void setSensitivity(int s) { std::lock_guard<std::mutex> l(m_); sensitivity_ = s; } // 0 low, 1 medium, 2 high
     void setUltraLight(bool v) { ultraLight_ = v; }
+    // v6.0: включается автоматически, пока активна трей-иконка.
+    void setMaxSecurity(bool v) { std::lock_guard<std::mutex> l(m_); maxSecurity_ = v; }
+    bool maxSecurity() const { std::lock_guard<std::mutex> l(m_); return maxSecurity_; }
     void setBackupRoot(std::wstring r) { std::lock_guard<std::mutex> l(m_); backupRoot_ = std::move(r); }
     void setExclusions(std::vector<std::wstring> paths, std::vector<std::wstring> exts);
     void setFolderSensitivities(std::vector<std::pair<std::wstring,int>> map);
@@ -81,12 +84,13 @@ private:
     std::deque<std::chrono::steady_clock::time_point> renames_;
     std::deque<std::chrono::steady_clock::time_point> hits_;
     unsigned long long events_ = 0;
-    bool emergency_ = false;
+    mutable bool emergency_ = false;
     std::chrono::steady_clock::time_point emergencyUntil_{};
     unsigned long long quarantined_ = 0;
     unsigned long long alerts_ = 0;
     int sensitivity_ = 1; // 0 low, 1 medium, 2 high
     std::atomic<bool> ultraLight_{false};
+    bool maxSecurity_ = false; // v6.0: aggressive thresholds while tray is active
     std::wstring backupRoot_;
 
     std::vector<std::wstring> excludePaths_;

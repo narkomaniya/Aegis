@@ -42,23 +42,45 @@ if [ -n "$tag" ]; then
     echo "Aegis: downloading $asset from $tag ..."
     curl -fL --retry 3 --max-time 300 -o "$tmp/$asset" "$DL/$tag/$asset"
 
-    # SHA256SUMS.txt лежит рядом с бинарником в релизах CI.
-    if curl -fsSL --max-time 30 -o "$tmp/SHA256SUMS.txt" "$DL/$tag/SHA256SUMS.txt"; then
-        expected=$(awk -v a="$asset" '$2==a {print tolower($1); exit}' "$tmp/SHA256SUMS.txt" || true)
-        if [ -n "$expected" ]; then
-            if command -v sha256sum >/dev/null 2>&1; then
-                actual=$(sha256sum "$tmp/$asset" | awk '{print tolower($1)}')
-            elif command -v shasum >/dev/null 2>&1; then
-                actual=$(shasum -a 256 "$tmp/$asset" | awk '{print tolower($1)}')
+    # v6.0: SHA256 mandatory for release downloads (same policy as `aegis update`).
+    if ! curl -fsSL --max-time 30 -o "$tmp/SHA256SUMS.txt" "$DL/$tag/SHA256SUMS.txt"; then
+        echo "Aegis: SHA256SUMS.txt is missing — refusing to install an unverified binary" >&2
+        exit 1
+    fi
+    expected=$(awk -v a="$asset" '$2==a {print tolower($1); exit}' "$tmp/SHA256SUMS.txt" || true)
+    if [ -z "$expected" ]; then
+        echo "Aegis: SHA256SUMS.txt has no entry for $asset" >&2
+        exit 1
+    fi
+    if command -v sha256sum >/dev/null 2>&1; then
+        actual=$(sha256sum "$tmp/$asset" | awk '{print tolower($1)}')
+    elif command -v shasum >/dev/null 2>&1; then
+        actual=$(shasum -a 256 "$tmp/$asset" | awk '{print tolower($1)}')
+    else
+        echo "Aegis: no SHA256 tool available (install sha256sum or shasum)" >&2
+        exit 1
+    fi
+    if [ "$actual" != "$expected" ]; then
+        echo "Aegis: SHA256 mismatch! expected $expected, got $actual" >&2
+        exit 1
+    fi
+    echo "Aegis: SHA256 verified."
+
+    # Optional v6.0: bot-approved mods published as release assets.
+    # Every downloaded asset is verified against SHA256SUMS.txt as well.
+    mod_dir="${HOME:-.}/.aegis/mods"
+    awk 'NF>=2 {n=$2; sub(/^\*/,"",n); if (n ~ /\.(aegismod|bot\.txt)$/) print $1, n}' "$tmp/SHA256SUMS.txt" | while read -r mh mn; do
+        if curl -fsSL --max-time 60 -o "$tmp/$mn" "$DL/$tag/$mn"; then
+            ma=$(sha256sum "$tmp/$mn" 2>/dev/null | awk '{print tolower($1)}')
+            if [ -n "$ma" ] && [ "$ma" = "$(echo "$mh" | tr 'A-Z' 'a-z')" ]; then
+                mkdir -p "$mod_dir"
+                cp -f "$tmp/$mn" "$mod_dir/$mn"
+                echo "Aegis: installed mod asset $mn"
             else
-                actual=""
-            fi
-            if [ -n "$actual" ] && [ "$actual" != "$expected" ]; then
-                echo "Aegis: SHA256 mismatch! expected $expected, got $actual" >&2
-                exit 1
+                echo "Aegis: mod asset $mn failed SHA256 check — skipped" >&2
             fi
         fi
-    fi
+    done
 else
     echo "Aegis: no published binary yet, building from source ..."
     command -v git >/dev/null 2>&1 || { echo "Aegis: need 'git'" >&2; exit 1; }

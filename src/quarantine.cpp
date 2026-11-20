@@ -2,6 +2,7 @@
 #include "quarantine.h"
 #include "logger.h"
 
+#include <algorithm>
 #include <chrono>
 #include <ctime>
 #include <fstream>
@@ -243,6 +244,11 @@ std::vector<Quarantine::Record> Quarantine::records() const {
 
         if (!r.file.empty()) out.push_back(r);
     }
+    // v6.0: stable numbering in the UI regardless of directory_iterator order.
+    std::sort(out.begin(), out.end(), [](const Record& a, const Record& b) {
+        if (a.time != b.time) return a.time > b.time; // newest first
+        return a.folder < b.folder;
+    });
     return out;
 }
 

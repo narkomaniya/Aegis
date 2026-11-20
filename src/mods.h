@@ -49,6 +49,20 @@ bool applyMod(const ModManifest& m, Settings& settings, std::wstring& message);
 bool publishMod(const ModManifest& m, bool strict, std::wstring& reportPath, std::wstring& summary);
 
 std::wstring modKey(const ModManifest& m);
+
+// v6.0 mod bot: deep `on_content` code scan + approval receipt + publish artifact.
+struct ModBotResult {
+    bool approved = false;
+    std::wstring reason;
+    std::wstring artifact;
+    std::wstring receipt;
+    std::vector<std::wstring> findings;
+};
+
+std::wstring approvedModsDir();
+ModBotResult botReviewMod(const ModManifest& m);
+ModBotResult botPublishMod(const ModManifest& m);
+bool uploadModArtifact(const std::wstring& tag, const std::wstring& artifact, std::wstring& error);
 std::wstring createModScaffold(const std::wstring& name, std::wstring& outPath, std::wstring& err);
 
 } // namespace ae

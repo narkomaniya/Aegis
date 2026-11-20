@@ -4,9 +4,14 @@
 #   3) homework.txt        -> normal file          -> must stay in place
 $ErrorActionPreference = 'Stop'
 $dir = Join-Path $PSScriptRoot '..\testdata'
-if (Test-Path $dir) { Remove-Item $dir -Recurse -Force }
-New-Item -ItemType Directory -Path $dir | Out-Null
+New-Item -ItemType Directory -Path $dir -Force | Out-Null
+# v6.0: only clean generated probe files — never delete tracked fixtures.
+foreach ($f in @('report.docx.locked', 'secret.bin', 'homework.txt', 'note.txt', 'tray-probe.locked')) {
+    Remove-Item -LiteralPath (Join-Path $dir $f) -Force -ErrorAction SilentlyContinue
+}
 Set-Content -Path "$dir\note.txt" -Value 'just a note'
+$exe = Join-Path $PSScriptRoot '..\build\aegis.exe'
+if (-not (Test-Path $exe)) { throw "Build Aegis first: $exe" }
 
 $job = Start-Job -ScriptBlock {
     param($d)
@@ -21,7 +26,7 @@ $job = Start-Job -ScriptBlock {
 
 # loopback ping can finish in well under a second, so the `q` used to arrive
 # before the job had even created the malicious files. Sleep a real 10 seconds.
-cmd /c "(powershell -NoProfile -Command Start-Sleep -Seconds 10 & echo quarantine & echo q) | build\aegis.exe watch `"$dir`""
+cmd /c "(powershell -NoProfile -Command Start-Sleep -Seconds 10 & echo quarantine & echo q) | `"$exe`" watch `"$dir`""
 
 Receive-Job -Wait $job | Out-Null
 "=== testdata after test ==="

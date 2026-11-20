@@ -17,4 +17,8 @@ void cleanupOldBinary();
 // путь к собственному бинарю (используется апдейтером и автозапуском)
 std::wstring selfPath();
 
+// v6.0 doctor: SHA256 helpers for binary integrity checks.
+std::string computeSha256OfFile(const std::wstring& pathW);
+std::string parseExpectedSha256(const std::string& sums, const std::wstring& assetW);
+
 } // namespace ae

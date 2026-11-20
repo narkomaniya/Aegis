@@ -4,10 +4,15 @@
 #include <mutex>
 #include <deque>
 #include <vector>
+#include <functional>
 
 namespace ae {
 
 enum class Level { Info, Ok, Warn, Alert };
+
+// Куда дублировать предупреждения (используется трей-иконкой v6.0).
+using AlertSink = std::function<void(Level, const std::wstring&)>;
+void setAlertSink(AlertSink sink);
 
 // Печать строки (с переводом строки). Умная: в консоли — широкий вывод,
 // при перенаправлении — ANSI-байты без цветовых кодов.
@@ -24,6 +29,8 @@ public:
     void setTheme(const std::wstring& theme); // default, white, black (mods/tweaks; in development)
     void write(Level lvl, const std::wstring& msg);
 
+    void setAlertSink(AlertSink sink);
+
     // Recent alert/warn messages for UI (menu-safe viewing)
     std::vector<std::wstring> recentAlerts(size_t maxN = 20);
     void clearRecentAlerts();
@@ -33,6 +40,7 @@ private:
     std::wstring filepath_;
     std::wstring theme_ = L"default";
     std::deque<std::wstring> recent_;
+    AlertSink alertSink_;
 };
 
 inline void info(const std::wstring& m)  { Logger::instance().write(Level::Info,  m); }

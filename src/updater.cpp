@@ -148,15 +148,25 @@ static std::wstring wideOfUtf8(const std::string& s) {
 // Вытаскиваем "tag_name" из JSON релиза
 static std::wstring parseTag(const std::string& json) {
     const char key[] = "\"tag_name\":";
-    std::string::size_type k = json.find(key);
-    if (k == std::string::npos) return L"";
-    std::string::size_type colon = json.find(':', k);
-    if (colon == std::string::npos) return L"";
-    std::string::size_type q1 = json.find('"', colon);
-    if (q1 == std::string::npos) return L"";
-    std::string::size_type q2 = json.find('"', q1 + 1);
-    if (q2 == std::string::npos) return L"";
-    return wideOfUtf8(json.substr(q1 + 1, q2 - q1 - 1));
+    // GitHub returns an ARRAY of releases: take the first top-level tag_name.
+    // A naive find() could match `"tag_name":` inside release notes, so we
+    // validate that the value actually looks like a version tag.
+    std::string::size_type from = 0;
+    while (true) {
+        std::string::size_type k = json.find(key, from);
+        if (k == std::string::npos) return L"";
+        const std::string::size_type colon = json.find(':', k + sizeof(key) - 1);
+        if (colon == std::string::npos) return L"";
+        const std::string::size_type q1 = json.find('"', colon);
+        if (q1 == std::string::npos || q1 - colon > 8) { from = k + 1; continue; }
+        const std::string::size_type q2 = json.find('"', q1 + 1);
+        if (q2 == std::string::npos) return L"";
+        std::string tag = json.substr(q1 + 1, q2 - q1 - 1);
+        if (tag.size() >= 2 && (tag[0] == 'v' || tag[0] == 'V') &&
+            tag[1] >= '0' && tag[1] <= '9')
+            return wideOfUtf8(tag);
+        from = k + 1; // e.g. a mention in release notes — keep looking
+    }
 }
 
 // "v0.10.1" -> {0,10,1} — числовое сравнение (не строковое!)
@@ -248,7 +258,7 @@ static std::wstring workDir() {
     return base;
 }
 
-static std::string parseExpectedSha256(const std::string& sums, const std::wstring& assetW) {
+std::string parseExpectedSha256(const std::string& sums, const std::wstring& assetW) {
     std::string asset(assetW.begin(), assetW.end());
     std::istringstream iss(sums);
     std::string line;
@@ -267,7 +277,7 @@ static std::string parseExpectedSha256(const std::string& sums, const std::wstri
     return "";
 }
 
-static std::string computeSha256OfFile(const std::wstring& pathW) {
+std::string computeSha256OfFile(const std::wstring& pathW) {
 #ifdef _WIN32
     // certutil -hashfile "path" SHA256
     std::wstring cmd = L"certutil -hashfile \"" + pathW + L"\" SHA256";

@@ -26,19 +26,27 @@ try {
         Write-Host "Aegis: downloading $asset from $tag ..."
         Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile (Join-Path $tmp $asset) -Headers @{ 'User-Agent' = 'aegis-installer' }
 
-        try {
-            $sumsUrl = "https://github.com/$repo/releases/download/$tag/SHA256SUMS.txt"
-            $sums = (Invoke-WebRequest -UseBasicParsing -Uri $sumsUrl -Headers @{ 'User-Agent' = 'aegis-installer' }).Content
-            $line = $sums -split "`n" | Where-Object { $_ -match "\s$([regex]::Escape($asset))\s*$" } | Select-Object -First 1
-            if ($line) {
-                $expected = ($line -split '\s+')[0].ToLowerInvariant()
-                $actual = (Get-FileHash -Algorithm SHA256 (Join-Path $tmp $asset)).Hash.ToLowerInvariant()
-                if ($expected -ne $actual) { throw "SHA256 mismatch: expected $expected, got $actual" }
+        # v6.0: SHA256 is MANDATORY for release downloads (same policy as `aegis update`).
+        $sumsUrl = "https://github.com/$repo/releases/download/$tag/SHA256SUMS.txt"
+        $sums = (Invoke-WebRequest -UseBasicParsing -Uri $sumsUrl -Headers @{ 'User-Agent' = 'aegis-installer' }).Content
+        $line = $sums -split "`n" | Where-Object { $_ -match "\s$([regex]::Escape($asset))\s*$" } | Select-Object -First 1
+        if (-not $line) { throw "SHA256SUMS.txt has no entry for $asset" }
+        $expected = ($line -split '\s+')[0].ToLowerInvariant()
+        $actual = (Get-FileHash -Algorithm SHA256 (Join-Path $tmp $asset)).Hash.ToLowerInvariant()
+        if ($expected -ne $actual) { throw "SHA256 mismatch: expected $expected, got $actual" }
+        Write-Host 'Aegis: SHA256 verified.'
+
+        # Optional v6.0: install bot-approved mods published as release assets.
+        $modsDest = Join-Path $dest 'mods'
+        foreach ($modAsset in ($rel.assets | Where-Object { $_.name -like '*.aegismod' -or $_.name -like '*.bot.txt' })) {
+            try {
+                Invoke-WebRequest -UseBasicParsing -Uri $modAsset.browser_download_url -OutFile (Join-Path $tmp $modAsset.name) -Headers @{ 'User-Agent' = 'aegis-installer' }
+                New-Item -ItemType Directory -Path $modsDest -Force | Out-Null
+                Copy-Item -Force (Join-Path $tmp $modAsset.name) (Join-Path $modsDest $modAsset.name)
+                Write-Host "Aegis: installed mod asset $($modAsset.name)"
+            } catch {
+                Write-Host "Aegis: optional mod asset $($modAsset.name) skipped."
             }
-        } catch {
-            # Отсутствие контрольных сумм не фатально: проверяем, только если они есть.
-            if ($_.Exception.Message -like '*SHA256 mismatch*') { throw }
-            Write-Host 'Aegis: SHA256SUMS.txt unavailable, skipping checksum.'
         }
     } else {
         Write-Host 'Aegis: no published binary yet, building from source ...'

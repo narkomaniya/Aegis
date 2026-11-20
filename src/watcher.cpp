@@ -5,6 +5,7 @@
 #include "watcher.h"
 #include "logger.h"
 
+#include <deque>
 #include <filesystem>
 #include <map>
 #include <set>
@@ -42,20 +43,23 @@ namespace ae {
 bool Watcher::add(const std::wstring& dir) {
     std::error_code ec;
     fs::path p(dir);
-    if (!fs::exists(p, ec) || ec) return false;
+    if (!fs::exists(p, ec) || ec || !fs::is_directory(p, ec) || ec) return false;
     dirs_.push_back(fs::absolute(p, ec).wstring());
     return !ec;
 }
 
 void Watcher::start() {
-    running_ = true;
     loopDone_ = false;
 #ifdef _WIN32
-    // Один общий manual-reset event: stop() взводит его, все потоки просыпаются.
+    // Create the stop event BEFORE publishing running_=true: an early stop()
+    // must never observe a null event with running_ already set.
     {
         HANDLE ev = CreateEventW(nullptr, TRUE, FALSE, nullptr);
         stopEvent_ = ev;
     }
+#endif
+    running_ = true;
+#ifdef _WIN32
     for (int i = 0; i < (int)dirs_.size(); ++i)
         threads_.emplace_back(&Watcher::loop, this, i);
 #else
@@ -151,7 +155,9 @@ void Watcher::loop(int index) {
 
     constexpr DWORD BUF = 64 * 1024;
     std::vector<BYTE> buf(BUF);
-    std::wstring pendingOld;
+    // v6.0: a queue, not a single string — OLD/NEW/OLD/NEW in one buffer
+    // used to lose the first pair and mislabel the second rename.
+    std::deque<std::wstring> pendingOld;
 
     HANDLE stopEv = static_cast<HANDLE>(stopEvent_);
 
@@ -209,7 +215,12 @@ void Watcher::loop(int index) {
 
         // bytes == 0: буфер переполнен, часть событий ОС потеряла — старые
         // данные в buf разбирать нельзя.
-        if (bytes == 0) continue;
+        if (bytes == 0) {
+            // Buffer overflow: the OS dropped events. Never parse stale bytes —
+            // warn loudly instead of silently losing protection events.
+            ae::warn(L"watch buffer overflow on " + dir + L" — some events were dropped");
+            continue;
+        }
 
         BYTE* p = buf.data();
         BYTE* end = p + bytes;
@@ -234,12 +245,14 @@ void Watcher::loop(int index) {
                 case FILE_ACTION_REMOVED:
                     ev.action = EventAction::Deleted; ev.name = name; break;
                 case FILE_ACTION_RENAMED_OLD_NAME:
-                    pendingOld = name; dispatch = false; break;  // пара: старое имя ждёт новое
+                    pendingOld.push_back(name); dispatch = false; break; // pair: old name awaits new
                 case FILE_ACTION_RENAMED_NEW_NAME:
                     ev.action = EventAction::Renamed;
                     ev.name = name;
-                    ev.oldName = pendingOld;
-                    pendingOld.clear();
+                    if (!pendingOld.empty()) {
+                        ev.oldName = pendingOld.front();
+                        pendingOld.pop_front();
+                    }
                     break;
                 default:
                     dispatch = false;  // неизвестное действие — не отдаём неинициализированное событие
@@ -447,6 +460,8 @@ static void addRecursive(int fd, std::map<int, std::wstring>& wd2dir,
                                    IN_MOVED_FROM | IN_MOVED_TO |
                                    IN_DELETE | IN_CLOSE_WRITE);
         if (wd >= 0) wd2dir[wd] = it->path().wstring();
+        else ae::warn(L"cannot watch subfolder " + it->path().wstring() +
+                      L" (inotify_add_watch failed; check max_user_watches)");
     }
     // и сам корень тоже
     int wd = inotify_add_watch(fd, fs::path(dir).string().c_str(),
@@ -454,6 +469,8 @@ static void addRecursive(int fd, std::map<int, std::wstring>& wd2dir,
                                IN_MOVED_FROM | IN_MOVED_TO |
                                IN_DELETE | IN_CLOSE_WRITE);
     if (wd >= 0) wd2dir[wd] = dir;
+    else ae::warn(L"cannot watch " + fs::path(dir).wstring() +
+                  L" (inotify_add_watch failed; check max_user_watches)");
 }
 
 void Watcher::loop(int index) {

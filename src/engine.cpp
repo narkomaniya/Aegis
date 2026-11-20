@@ -291,6 +291,9 @@ double Engine::sampleEntropy(const std::wstring& full) const {
 
 bool Engine::emergencyActive() const {
     std::lock_guard<std::mutex> lock(m_);
+    // v6.0: истечение аварийного режима не должно зависеть от следующего события.
+    if (emergency_ && std::chrono::steady_clock::now() > emergencyUntil_)
+        emergency_ = false;
     return emergency_;
 }
 
@@ -309,14 +312,16 @@ void Engine::noteRate(bool isRename) {
 
 static void raiseEmergencyLocked(unsigned long long& alerts, bool& emergency,
                                  std::chrono::steady_clock::time_point& until,
-                                 const std::wstring& why) {
+                                 const std::wstring& why, int seconds = 30) {
     if (!emergency) {
         emergency = true;
-        until = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+        until = std::chrono::steady_clock::now() + std::chrono::seconds(seconds);
     }
     ++alerts;
     ae::alert(why);
 }
+
+static int emergencySeconds(bool maxSecurity) { return maxSecurity ? 60 : 30; }
 
 void Engine::checkRate(int sensitivity) {
     if (emergency_) {
@@ -327,10 +332,13 @@ void Engine::checkRate(int sensitivity) {
     size_t limit = 150;
     if (sensitivity <= 0) limit = 220;      // low: fewer false positives
     else if (sensitivity >= 2) limit = 90;  // high: catch faster
+    if (maxSecurity_) limit = limit / 3;   // v6.0: tray active -> maximum security
     if (rate_.size() > limit) {
         raiseEmergencyLocked(alerts_, emergency_, emergencyUntil_,
-                             L"EMERGENCY: mass file changes — looks like a ransomware attack!");
-        ae::warn(L"new files will be copied to quarantine for 30 seconds");
+                             L"EMERGENCY: mass file changes — looks like a ransomware attack!",
+                             emergencySeconds(maxSecurity_));
+        ae::warn(std::wstring(L"new files will be copied to quarantine for ") +
+                 std::to_wstring(emergencySeconds(maxSecurity_)) + L" seconds");
     }
 }
 
@@ -340,17 +348,20 @@ void Engine::checkRenames(int sensitivity) {
     size_t limit = 15;
     if (sensitivity <= 0) limit = 25;
     else if (sensitivity >= 2) limit = 8;
+    if (maxSecurity_) limit = limit / 3;
     if (renames_.size() > limit) {
         raiseEmergencyLocked(alerts_, emergency_, emergencyUntil_,
-                             L"ANOMALY: mass rename burst — typical ransomware behavior (files renamed during encryption)");
-        ae::warn(L"new files will be copied to quarantine for 30 seconds");
+                             L"ANOMALY: mass rename burst — typical ransomware behavior (files renamed during encryption)",
+                             emergencySeconds(maxSecurity_));
+        ae::warn(std::wstring(L"new files will be copied to quarantine for ") +
+                 std::to_wstring(emergencySeconds(maxSecurity_)) + L" seconds");
     }
 }
 
 static void noteHitLocked(std::deque<std::chrono::steady_clock::time_point>& hits,
                           unsigned long long& alerts, bool& emergency,
                           std::chrono::steady_clock::time_point& until,
-                          int sensitivity) {
+                          int sensitivity, bool maxSecurity = false) {
     auto now = std::chrono::steady_clock::now();
     hits.push_back(now);
     auto window = std::chrono::seconds(10);
@@ -358,12 +369,15 @@ static void noteHitLocked(std::deque<std::chrono::steady_clock::time_point>& hit
     size_t limit = 4;
     if (sensitivity <= 0) limit = 6;
     else if (sensitivity >= 2) limit = 3;
+    if (maxSecurity) limit = 2;
     // В аварийном режиме не поднимаем тревогу на каждое срабатывание:
     // иначе массовое шифрование порождает лавину логов и алертов.
     if (hits.size() >= limit && !emergency) {
         raiseEmergencyLocked(alerts, emergency, until,
-            L"EMERGENCY: multiple ransomware-like detections in a short time — attack in progress!");
-        ae::warn(L"new files will be copied to quarantine for 30 seconds");
+            L"EMERGENCY: multiple ransomware-like detections in a short time — attack in progress!",
+            emergencySeconds(maxSecurity));
+        ae::warn(std::wstring(L"new files will be copied to quarantine for ") +
+                 std::to_wstring(emergencySeconds(maxSecurity)) + L" seconds");
     }
 }
 
@@ -545,7 +559,7 @@ void Engine::onEvent(const FileEvent& e) {
                 if (!emergency_) {
                     emergency_ = true;
                     emergencyUntil_ = std::chrono::steady_clock::now() +
-                                      std::chrono::seconds(30);
+                                      std::chrono::seconds(emergencySeconds(maxSecurity_));
                 }
                 ++alerts_;
             }
@@ -611,10 +625,10 @@ void Engine::onEvent(const FileEvent& e) {
             if (!emergency_) {
                 emergency_ = true;
                 emergencyUntil_ = std::chrono::steady_clock::now() +
-                                  std::chrono::seconds(30);
+                                  std::chrono::seconds(emergencySeconds(maxSecurity_));
             }
             ++alerts_;
-            noteHitLocked(hits_, alerts_, emergency_, emergencyUntil_, effSens);
+            noteHitLocked(hits_, alerts_, emergency_, emergencyUntil_, effSens, maxSecurity_);
         }
         ae::alert(L"TAMPER ALERT: canary touched: " + full +
                   L" — something is messing with this folder!");
@@ -635,10 +649,10 @@ void Engine::onEvent(const FileEvent& e) {
             if (!emergency_) {
                 emergency_ = true;
                 emergencyUntil_ = std::chrono::steady_clock::now() +
-                                  std::chrono::seconds(30);
+                                  std::chrono::seconds(emergencySeconds(maxSecurity_));
             }
             ++alerts_;
-            noteHitLocked(hits_, alerts_, emergency_, emergencyUntil_, effSens);
+            noteHitLocked(hits_, alerts_, emergency_, emergencyUntil_, effSens, maxSecurity_);
         }
         ae::alert(L"TAMPER ALERT: canary was moved away: " + full +
                   L" — someone is disarming the trap!");
@@ -650,7 +664,7 @@ void Engine::onEvent(const FileEvent& e) {
     // 0c) Записка выкупа: типовое имя "how to decrypt ..." и т.п.
     if (isRansomNoteName(e.name)) {
         take(e, full, L"ransom note detected: " + e.name, false);
-        { std::lock_guard<std::mutex> lock(m_); noteHitLocked(hits_, alerts_, emergency_, emergencyUntil_, effSens); }
+        { std::lock_guard<std::mutex> lock(m_); noteHitLocked(hits_, alerts_, emergency_, emergencyUntil_, effSens, maxSecurity_); }
         return;
     }
 
@@ -675,7 +689,7 @@ void Engine::onEvent(const FileEvent& e) {
                     if (!hit.empty()) {
                         std::wstring hitw(hit.begin(), hit.end());
                         take(e, full, L"ransom note content: \"" + hitw + L"\"", false);
-                        { std::lock_guard<std::mutex> lock(m_); noteHitLocked(hits_, alerts_, emergency_, emergencyUntil_, effSens); }
+                        { std::lock_guard<std::mutex> lock(m_); noteHitLocked(hits_, alerts_, emergency_, emergencyUntil_, effSens, maxSecurity_); }
                         return;
                     }
                 }
@@ -689,7 +703,7 @@ void Engine::onEvent(const FileEvent& e) {
         !oldExt.empty() && susExt) {
         take(e, full, L"dangerous rename: " + oldExt + L" -> " + ext +
                  (hasDoubleExtRansom(e.name, ext) ? L" (double extension)" : L""), false);
-        { std::lock_guard<std::mutex> lock(m_); noteHitLocked(hits_, alerts_, emergency_, emergencyUntil_, effSens); }
+        { std::lock_guard<std::mutex> lock(m_); noteHitLocked(hits_, alerts_, emergency_, emergencyUntil_, effSens, maxSecurity_); }
         return;
     }
 
@@ -697,7 +711,7 @@ void Engine::onEvent(const FileEvent& e) {
     if (susExt) {
         take(e, full, L"dangerous extension " + ext +
                  (hasDoubleExtRansom(e.name, ext) ? L" (double extension)" : L""), false);
-        { std::lock_guard<std::mutex> lock(m_); noteHitLocked(hits_, alerts_, emergency_, emergencyUntil_, effSens); }
+        { std::lock_guard<std::mutex> lock(m_); noteHitLocked(hits_, alerts_, emergency_, emergencyUntil_, effSens, maxSecurity_); }
         return;
     }
 
@@ -715,6 +729,8 @@ void Engine::onEvent(const FileEvent& e) {
             double tCreated = 7.5, tModified = 7.85;
             if (effSens <= 0) { tCreated = 7.7; tModified = 7.92; }
             else if (effSens >= 2) { tCreated = 7.3; tModified = 7.7; }
+            // v6.0: пока активен трей — ловим почти любую шифровальную энтропию.
+            if (maxSecurity_) { tCreated = 6.8; tModified = 7.1; }
             // ultra-light: slightly stricter on Created to keep protection with fewer checks
             if (ultra) tCreated += 0.05;
             double threshold = (e.action == EventAction::Created) ? tCreated : tModified;
@@ -724,7 +740,7 @@ void Engine::onEvent(const FileEvent& e) {
                 swprintf(buf, 16, L"%.2f", H);
                 take(e, full, L"high entropy (" + std::wstring(buf) +
                      L"/8.0) — looks like encryption", false);
-                { std::lock_guard<std::mutex> lock(m_); noteHitLocked(hits_, alerts_, emergency_, emergencyUntil_, effSens); }
+                { std::lock_guard<std::mutex> lock(m_); noteHitLocked(hits_, alerts_, emergency_, emergencyUntil_, effSens, maxSecurity_); }
                 return;
             }
         }

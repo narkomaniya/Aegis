@@ -15,6 +15,10 @@ add_executable(aegis
     src/autostart.cpp
     src/config.cpp
     src/mods.cpp
+    src/animals.cpp
+    src/tray.cpp
+    src/configs.cpp
+    src/doctor.cpp
 )
 
 if(NOT WIN32)
