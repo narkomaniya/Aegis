@@ -51,7 +51,7 @@ jobs:
           $modsHome = Join-Path $env:USERPROFILE ".aegis\mods"
           New-Item -ItemType Directory -Force -Path $modsHome | Out-Null
           if (Test-Path "mods") {
-            Get-ChildItem mods -File -Include *.aegismod,*.mod,*.txt -ErrorAction SilentlyContinue | ForEach-Object {
+            Get-ChildItem mods -File -Recurse -Include *.aegismod,*.mod,*.txt -ErrorAction SilentlyContinue | ForEach-Object {
               Copy-Item $_.FullName -Destination $modsHome -Force
             }
           }

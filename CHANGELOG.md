@@ -24,9 +24,6 @@
 - `emergencyActive()` expires on query, not only on the next file event.
 - Hotfix: `update -y` parses GitHub's compact `"tag_name":"v6.0"` JSON correctly; bot `.bot.txt` receipts are no longer treated as mods; both installers put mods and receipts into `~/.aegis/mods` and `~/.aegis/mods-approved` respectively.
 
-### Known limitations
-- `.github/workflows/mod-verify.yml` still needs `-Recurse` on the Windows `Get-ChildItem` line; the available token cannot edit workflow files.
-
 ## v5.0 — Biggest update in the project's history (Mod Platform, Automatic Mod Verification, Quality Update)
 
 ### Added
